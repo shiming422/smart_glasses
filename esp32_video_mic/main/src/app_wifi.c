@@ -31,6 +31,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t base, int32_t id, voi
 }
 
 void app_wifi_init(void) {
+    if (!s_wifi_evt) s_wifi_evt = xEventGroupCreate();
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
@@ -56,6 +58,4 @@ void app_wifi_init(void) {
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     esp_wifi_set_max_tx_power(78);
-    if (!s_wifi_evt) s_wifi_evt = xEventGroupCreate();
-
 }

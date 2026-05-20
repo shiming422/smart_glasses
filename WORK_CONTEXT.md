@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 20:04 Asia/Shanghai
+Last updated: 2026-05-20 20:07 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -30,20 +30,23 @@ Clean copy: `E:\Desktop\smart_glasses_esp32_workspace\esp32_video_mic`
 
 Current role:
 
-- Camera uploads complete JPEG frames to `ws://<backend>:8765/ws/camera`.
-- PDM microphone uploads PCM16 mono 16 kHz chunks to `ws://<backend>:8765/ws_audio`.
+- Discovers backend IP automatically via UDP broadcast on `54321`.
+- Camera uploads complete JPEG frames to `ws://<discovered-backend>:8765/ws/camera`.
+- PDM microphone uploads PCM16 mono 16 kHz chunks to `ws://<discovered-backend>:8765/ws_audio`.
 - This board does not own `/stream.wav`, TTS, local HTTP preview, or IMU.
 
 Changes already made in the clean copy:
 
 - `main/main.c` now starts only Wi-Fi, camera, camera stream, and microphone stream.
-- `main/inc/sys_config.h` defaults backend port to `8765` and can be overridden through `SEC_BACKEND_HOST` / `SEC_BACKEND_PORT` in `secrets.h`.
+- `main/src/app_backend.c` and `main/inc/app_backend.h` implement UDP discovery using request `AIGLASS_DISCOVER` and response prefix `AIGLASS_HOST:`.
+- `main/inc/sys_config.h` no longer has a hardcoded backend host; the stable backend HTTP/WebSocket port remains `8765`.
+- Camera and microphone WebSocket clients now wait for discovered backend host before connecting.
 - `APP_WAV_STREAM_ENABLE` is `0`, so this board does not pull backend audio playback.
 - `main/CMakeLists.txt` no longer compiles local HTTP, TTS, or IMU modules for this board.
 
-Important current limitation:
+Configuration rule:
 
-- ESP32A still uses a configured backend host (`SEC_BACKEND_HOST`, default `10.76.120.125`). It does not yet use UDP discovery. A good next improvement is to port B's `AIGLASS_DISCOVER` flow into ESP-IDF so both boards discover the backend the same way.
+- For ESP32A normal use, only edit Wi-Fi SSID/password in `main/inc/secrets.h`; backend IP should be discovered automatically as long as the backend responder is running on the same LAN.
 
 ### ESP32B: Audio Playback + IMU Upload
 
@@ -83,14 +86,14 @@ Required backend interfaces:
 - `WebSocket /ws_audio`: text controls plus PCM16 mic chunks from ESP32A.
 - `GET /stream.wav`: WAV/PCM audio stream to ESP32B.
 - `UDP 12345`: IMU JSON from ESP32B.
-- `UDP 54321`: host-side discovery responder.
+- `UDP 54321`: host-side discovery responder. ESP32A and ESP32B both send `AIGLASS_DISCOVER`; backend replies `AIGLASS_HOST:<ip>` or optionally `AIGLASS_HOST:<ip>:<port>`.
 
 Backend `.env` items that must be checked before hardware testing:
 
 - `AIGLASS_UDP_PORT` should be `12345` for the current ESP32B firmware.
 - `AIGLASS_AUDIO_WS_ENABLED` should be `1` when testing ESP32A microphone upload.
 - `AIGLASS_CAMERA_SOURCE=ws` is appropriate for direct `/ws/camera` JPEG input.
-- If ESP32A still uses configured host instead of discovery, make sure `SEC_BACKEND_HOST` in its `secrets.h` matches the backend machine IP.
+- Backend discovery responder must listen on UDP `54321` and return the backend machine IP reachable by the ESP32 boards.
 
 Known mismatch from older docs:
 
@@ -111,10 +114,10 @@ Known mismatch from older docs:
 
 ## Next Suggested Work
 
-1. Build `esp32_video_mic` with ESP-IDF and fix any compile issues caused by trimming modules.
+1. Flash and hardware-test `esp32_video_mic`; confirm logs show `backend discovered`, then camera and audio WebSocket URIs use the discovered IP.
 2. Build `esp32_audio_imu` with PlatformIO and confirm the role marker did not affect compilation.
 3. Update backend `.env` to match the board split, especially UDP `12345` and audio WebSocket enabled.
-4. Add UDP discovery to `esp32_video_mic`, or document `SEC_BACKEND_HOST` as the required manual config.
+4. Make/verify backend UDP discovery responder on `54321` so both ESP32 boards only need Wi-Fi SSID/password changes.
 5. Run hardware tests:
    - ESP32A video connected and viewer FPS updates.
    - ESP32A `/ws_audio` connects and backend replies `OK:STARTED`.
@@ -129,6 +132,7 @@ Known mismatch from older docs:
   `& C:\Users\shiming\esp\v5.5.2\esp-idf\export.ps1; idf.py --no-ccache build`
 - Build succeeded and produced `build\project-name.bin`.
 - Remaining warnings are from disabled `/stream.wav` code paths inside `app_stream_audio.c` because `APP_WAV_STREAM_ENABLE=0`; they do not block the build.
+- ESP32A was updated to use the same backend auto-discovery protocol as ESP32B. Build re-ran successfully after the change and produced `build\project-name.bin`.
 - `esp32_audio_imu` PlatformIO build was not run because `platformio` / `pio` is not currently in this shell PATH. Static role check passed: `DEVICE_ROLE_AUDIO_IMU=1`, `ENABLE_CAMERA=0`, `ENABLE_MIC_UPLINK=0`.
 - Git was initialized for this clean workspace. The initial baseline commit should include source/config/reference files plus this context file, while ignoring generated build artifacts.
 - Backend desktop cleanup kept only `E:\Desktop\OpenAIglasses_Navigation_clean` as the OpenAIglasses backend project. Docker rebuilt and started container `aiglass`; `GET /api/health` returned `OK`, and the frontend returned HTTP 200 with title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`.

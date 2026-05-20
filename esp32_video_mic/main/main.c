@@ -5,6 +5,7 @@
 #include "esp_system.h"
 
 #include "app_wifi.h"
+#include "app_backend.h"
 #include "app_camera.h"
 #include "app_stream_cam.h"
 #include "app_stream_audio.h"
@@ -20,6 +21,7 @@ void app_main(void) {
 
     ESP_ERROR_CHECK(app_camera_init());
     app_wifi_init();
+    ESP_ERROR_CHECK(app_backend_discovery_start());
 
     // Board A role: camera JPEG uplink + microphone PCM uplink only.
     ESP_ERROR_CHECK(app_stream_cam_init());

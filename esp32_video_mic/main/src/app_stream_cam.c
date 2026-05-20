@@ -1,4 +1,5 @@
 #include "app_stream_cam.h"
+#include "app_backend.h"
 #include "app_wifi.h"
 #include "sys_config.h"
 
@@ -318,7 +319,11 @@ static void cam_ws_task(void *arg) {
     }
     xEventGroupWaitBits(evt, APP_WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    snprintf(s_cam_uri, sizeof(s_cam_uri), "ws://%s:%d%s", APP_SERVER_HOST, APP_SERVER_PORT, APP_CAM_WS_PATH);
+    char backend_host[64] = "";
+    int backend_port = APP_SERVER_PORT;
+    ESP_ERROR_CHECK(app_backend_wait(backend_host, sizeof(backend_host), &backend_port, portMAX_DELAY));
+    snprintf(s_cam_uri, sizeof(s_cam_uri), "ws://%s:%d%s", backend_host, backend_port, APP_CAM_WS_PATH);
+    ESP_LOGI(TAG, "camera ws uri: %s", s_cam_uri);
 
     esp_websocket_client_config_t cfg = {
         .uri = s_cam_uri,

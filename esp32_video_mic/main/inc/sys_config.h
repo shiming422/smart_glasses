@@ -30,15 +30,15 @@
 // Board role: video + microphone uplink.
 // Audio playback and IMU live on the separate esp32_audio_imu firmware.
 
-// Server config (camera/audio websocket)
-#ifndef SEC_BACKEND_HOST
-#define SEC_BACKEND_HOST    "10.76.120.125"
-#endif
-#ifndef SEC_BACKEND_PORT
-#define SEC_BACKEND_PORT    8765
-#endif
-#define APP_SERVER_HOST     SEC_BACKEND_HOST
-#define APP_SERVER_PORT     SEC_BACKEND_PORT
+// Backend config. The host is discovered at runtime via UDP broadcast.
+#define APP_SERVER_PORT     8765
+#define APP_DISCOVERY_PORT  54321
+#define APP_DISCOVERY_REQUEST "AIGLASS_DISCOVER"
+#define APP_DISCOVERY_PREFIX  "AIGLASS_HOST:"
+#define APP_DISCOVERY_TIMEOUT_MS 8000
+#define APP_DISCOVERY_SEND_INTERVAL_MS 1000
+#define APP_DISCOVERY_RETRY_MS 2000
+#define APP_DISCOVERY_REFRESH_MS 30000
 #define APP_CAM_WS_PATH     "/ws/camera"
 #define APP_AUD_WS_PATH     "/ws_audio"
 #define APP_STREAM_WAV_PATH "/stream.wav"

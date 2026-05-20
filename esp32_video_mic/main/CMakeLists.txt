@@ -1,5 +1,6 @@
 idf_component_register(SRCS "main.c"
         "src/app_wifi.c"
+        "src/app_backend.c"
         "src/app_camera.c"
         "src/app_audio.c"
         "src/app_stream_cam.c"
