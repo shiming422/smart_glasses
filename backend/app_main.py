@@ -55,6 +55,26 @@ except Exception:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+class Utf8NoCacheStaticFiles(StaticFiles):
+    _UTF8_CONTENT_TYPES = {
+        ".js": "text/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+    }
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+
+        content_type = self._UTF8_CONTENT_TYPES.get(os.path.splitext(path)[1].lower())
+        if content_type:
+            response.headers["Content-Type"] = content_type
+        return response
+
 def _resolve_project_path(path_value: str) -> str:
     if not path_value:
         return path_value
@@ -102,6 +122,8 @@ VIEWER_SEND_TIMEOUT_MS = max(20, _env_int("AIGLASS_VIEWER_SEND_TIMEOUT_MS", 120)
 OVERLAY_STALE_MS = max(100, _env_int("AIGLASS_OVERLAY_STALE_MS", 400))
 PATH_FRAME_DIV = max(1, _env_int("AIGLASS_PATH_FRAME_DIV", 2))
 TRAFFIC_FRAME_DIV = max(1, _env_int("AIGLASS_TRAFFIC_FRAME_DIV", 2))
+NAV_VIEWER_FRAME_DIV = max(1, _env_int("AIGLASS_NAV_VIEWER_FRAME_DIV", 4))
+NAV_RAW_BETWEEN_OVERLAYS = _env_flag("AIGLASS_NAV_RAW_BETWEEN_OVERLAYS", True)
 RECORD_FRAME_FPS = max(1, _env_int("AIGLASS_RECORD_FRAME_FPS", 10))
 AUTO_RECORD_ENABLED = _env_flag("AIGLASS_AUTO_RECORD", False)
 NAV_DIRECT_VIEWER_ENABLED = _env_flag("AIGLASS_NAV_DIRECT_VIEWER", False)
@@ -140,6 +162,7 @@ print(
     f"viewer_q={VIEWER_JPEG_QUALITY}, max_viewers={MAX_VIEWERS}, "
     f"send_timeout_ms={VIEWER_SEND_TIMEOUT_MS}, overlay_stale_ms={OVERLAY_STALE_MS}, "
     f"path_frame_div={PATH_FRAME_DIV}, traffic_frame_div={TRAFFIC_FRAME_DIV}, "
+    f"nav_viewer_frame_div={NAV_VIEWER_FRAME_DIV}, nav_raw_between_overlays={NAV_RAW_BETWEEN_OVERLAYS}, "
     f"record_fps={RECORD_FRAME_FPS}, "
     f"auto_record={AUTO_RECORD_ENABLED}, nav_direct_viewer={NAV_DIRECT_VIEWER_ENABLED}, "
     f"handover_stale_sec={CAMERA_WS_HANDOVER_STALE_SEC}",
@@ -199,7 +222,7 @@ except ValueError:
 app = FastAPI()
 
 # ====== 状态与容器 ======
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+app.mount("/static", Utf8NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 ui_clients: Dict[int, WebSocket] = {}
 current_partial: str = ""
@@ -1168,9 +1191,11 @@ def root():
     with open(os.path.join(BASE_DIR, "templates", "index.html"), "r", encoding="utf-8") as f:
         return HTMLResponse(
             f.read(),
+            media_type="text/html",
             headers={
                 "Cache-Control": "no-store, max-age=0",
                 "Pragma": "no-cache",
+                "X-Content-Type-Options": "nosniff",
             },
         )
 
@@ -2121,6 +2146,8 @@ async def camera_processor_loop():
     idle_sleep = CAMERA_PIPELINE_IDLE_MS / 1000.0
     nav_frame_cache = ProcessedFrameCache()
     nav_frames_since_infer = 0
+    nav_viewer_frames_since_overlay = NAV_VIEWER_FRAME_DIV
+    nav_viewer_force_overlay = False
     nav_infer_task: Optional[asyncio.Task] = None
     nav_infer_mode = ""
     traffic_frame_cache = ProcessedFrameCache()
@@ -2208,6 +2235,7 @@ async def camera_processor_loop():
                         out_img = res.annotated_image if res.annotated_image is not None else infer_raw
                         _update_processed_frame_cache(nav_frame_cache, nav_infer_mode, infer_raw, out_img)
                         nav_frames_since_infer = 0
+                        nav_viewer_force_overlay = True
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
@@ -2227,6 +2255,8 @@ async def camera_processor_loop():
             if nav_cache_mode != nav_frame_cache.mode:
                 _reset_processed_frame_cache(nav_frame_cache, nav_cache_mode)
                 nav_frames_since_infer = 0
+                nav_viewer_frames_since_overlay = NAV_VIEWER_FRAME_DIV
+                nav_viewer_force_overlay = False
             traffic_cache_mode = current_state if should_process_traffic else ""
             if traffic_cache_mode != traffic_frame_cache.mode:
                 if traffic_infer_task is not None and not traffic_infer_task.done():
@@ -2238,10 +2268,13 @@ async def camera_processor_loop():
             bgr = None
             should_run_nav_infer = False
             should_decode_for_nav = False
+            viewer_should_encode_nav_overlay = False
             should_run_traffic_infer = False
             should_decode_for_traffic = False
             if should_process_nav_overlay:
                 nav_frames_since_infer += 1
+                if viewer_needs_processed_frame:
+                    nav_viewer_frames_since_overlay += 1
                 should_run_nav_infer = (
                     nav_infer_task is None
                     and (
@@ -2249,7 +2282,16 @@ async def camera_processor_loop():
                         or nav_frames_since_infer >= PATH_FRAME_DIV
                     )
                 )
-                should_decode_for_nav = should_run_nav_infer or viewer_needs_processed_frame
+                viewer_should_encode_nav_overlay = bool(
+                    viewer_needs_processed_frame
+                    and nav_frame_cache.annotated_frame is not None
+                    and (
+                        nav_viewer_force_overlay
+                        or not NAV_RAW_BETWEEN_OVERLAYS
+                        or nav_viewer_frames_since_overlay >= NAV_VIEWER_FRAME_DIV
+                    )
+                )
+                should_decode_for_nav = should_run_nav_infer or viewer_should_encode_nav_overlay
             if should_process_traffic:
                 traffic_frames_since_infer += 1
                 should_run_traffic_infer = (
@@ -2311,18 +2353,22 @@ async def camera_processor_loop():
 
             if should_process_nav_overlay:
                 try:
-                    out_img = None
                     if should_run_nav_infer and bgr is not None:
                         nav_infer_mode = nav_cache_mode
                         nav_infer_task = asyncio.create_task(_run_navigation_infer_async(bgr))
                         nav_frames_since_infer = 0
-                    if viewer_needs_processed_frame and bgr is not None:
+                    overlay_sent = False
+                    if viewer_should_encode_nav_overlay and bgr is not None:
                         out_img = _compose_cached_annotated_frame(nav_frame_cache, bgr)
-
-                    if viewer_needs_processed_frame and out_img is not None:
-                        enc = await asyncio.to_thread(_encode_viewer_jpeg, out_img, False)
-                        if enc is not None:
-                            await _broadcast_camera_jpeg(enc)
+                        if out_img is not None:
+                            enc = await asyncio.to_thread(_encode_viewer_jpeg, out_img, False)
+                            if enc is not None:
+                                await _broadcast_camera_jpeg(enc)
+                                nav_viewer_frames_since_overlay = 0
+                                nav_viewer_force_overlay = False
+                                overlay_sent = True
+                    if viewer_needs_processed_frame and not overlay_sent:
+                        await _broadcast_camera_jpeg(data)
                 except Exception as e:
                     if _is_memory_pressure_error(e):
                         now_ts = time.monotonic()

@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 21:24 Asia/Shanghai
+Last updated: 2026-05-20 21:50 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -114,6 +114,14 @@ Known mismatch from older docs:
 
 - Some old docs say `/ws/camera` is historical or rejected. Current `app_main.py` still implements and accepts `/ws/camera`, then selects camera source `esp32_ws`.
 
+Current frontend / blind-path runtime notes:
+
+- Backend now serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` also cache-busts `main.js` with version `20260520-utf8-nav-latency`.
+- Blind-path frontend preview no longer forces a decode + annotate + JPEG re-encode on every viewer frame. `AIGLASS_NAV_VIEWER_FRAME_DIV` controls the annotated preview cadence, and `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS=1` sends the original ESP32 JPEG frames between annotated frames so the browser preview stays smooth while navigation inference continues.
+- The backend protocol did not change: ESP32A still sends JPEG frames to `WebSocket /ws/camera`, browsers still read `WebSocket /ws/viewer`, and navigation state/control endpoints are unchanged.
+- Local ignored `backend\.env` was set to `AIGLASS_NAV_VIEWER_FRAME_DIV=4` and `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS=1`; committed defaults are documented in `backend\.env.example`.
+- If blind-path preview is still very laggy after this backend change, ask the hardware/ESP32 window to measure ESP32A camera upload FPS, JPEG byte size, camera frame size/quality, and Wi-Fi RSSI on `TP-LINK_6C93`. At that point the likely remaining bottleneck is ESP32A camera encode/upload or 2.4 GHz Wi-Fi quality, not the frontend page encoding.
+
 ## Git Workflow Requirement
 
 - Keep this clean workspace in Git.
@@ -139,6 +147,7 @@ Known mismatch from older docs:
    - ESP32A `/ws_audio` connects and backend replies `OK:STARTED`.
    - ESP32B `/stream.wav` parses WAV header and plays audio.
    - ESP32B IMU logs `sent=... fail=0` to UDP `12345`.
+6. After backend blind-path optimization, if the frontend still stutters during `盲道导航`, have the hardware window lower ESP32A camera resolution/JPEG quality/upload FPS one step and record FPS/JPEG size/RSSI before and after.
 
 ## Verification Log
 
@@ -158,3 +167,4 @@ Known mismatch from older docs:
 - Backend hardcoded DashScope keys were removed from source files; runtime key loading now depends on local ignored `backend\.env` / `DASHSCOPE_API_KEY`. Firmware private config files now have committed `.example.h` templates and ignored local real-value files.
 - Backend Docker was rebuilt and started from `backend` with `docker compose up -d --build` after recovering a stuck Docker Desktop/WSL state. Container `aiglass` is healthy with ports `8765/tcp`, `12345/udp`, and `54321/udp` mapped. `GET http://127.0.0.1:8765/api/health` returned `OK`, and the frontend returned HTTP 200 with title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`.
 - Local ignored `backend\.env` was updated to `AIGLASS_DISCOVERY_HOST=192.168.1.106` and `AIGLASS_DISCOVERY_PORT=54321`; after `docker compose up -d`, logs show `[DISC] UDP discovery responder listening on port 54321, advertised IP=192.168.1.106` and `[UDP] listening on 0.0.0.0:12345`.
+- Backend frontend/latency pass: `python -m py_compile backend\app_main.py` passed. Docker was rebuilt with `docker compose up -d --build`; container `aiglass` is healthy. `GET /api/health` returned `OK`. `GET /` returned `Content-Type: text/html; charset=utf-8`, no-store cache headers, title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`, and visible Chinese `盲道导航`. `GET /static/main.js?v=20260520-utf8-nav-latency` returned `Content-Type: text/javascript; charset=utf-8`, no-store cache headers, and Chinese text intact. Docker logs show `nav_viewer_frame_div=4` and `nav_raw_between_overlays=True`. A short `blind_nav` runtime test with the live ESP32 camera completed 6 navigation inferences with 0 errors, then returned to `CHAT`.
