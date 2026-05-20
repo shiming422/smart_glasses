@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 22:39 Asia/Shanghai
+Last updated: 2026-05-20 22:57 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -186,3 +186,8 @@ Current frontend / blind-path runtime notes:
 - `GET /api/camera/stats` returned `protocol=udp`, `udp_port=22345`, `ctrl_ws_enabled=true`. A local fragmented UDP JPEG injection sent 24 complete test frames through `22345`; stats showed `completed_frames=24`, `complete_fps=12.44`, `avg_jpeg_bytes=5764`, `last_frame_age_ms=130`, and zero invalid/CRC/timeout/drop counters.
 - Frontend verification returned `GET /` HTTP 200 with `Content-Type: text/html; charset=utf-8`, title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`, and Chinese `盲道导航` intact. `GET /static/main.js?v=20260520-udp-camera-nav-events` returned `Content-Type: text/javascript; charset=utf-8` and contains `/ws/nav_events`.
 - Hardware flashing and 60-second blind-path live walk test were not run in this backend window after the UDP rewrite; the other ESP32/hardware window should perform those checks.
+- ESP32A UDP camera firmware was compiled and flashed to `COM22` with ESP-IDF 5.5.2 using `idf.py --no-ccache -p COM22 flash`. Flash verification passed for MAC `98:a3:16:f7:01:9c`, app version `181514d-dirty`.
+- ESP32A serial after flashing confirmed `cam_capture_task core=0`, `cam_udp_send_task core=1`, `cam_ctrl_ws_task core=1`, Wi-Fi connected to `TP-LINK_6C93` with IP `192.168.1.109`, backend discovered at `192.168.1.106:8765`, UDP target `192.168.1.106:22345`, `camera_ctrl connected`, and audio WebSocket connected.
+- ESP32A received backend camera profile commands: navigation profile `SET:FRAMESIZE=VGA`, `SET:QUALITY=24`, `SET:FPS=10`; later chat profile `SET:QUALITY=28`, `SET:FPS=6`.
+- ESP32A UDP sender stabilized after initial startup: 5-second serial windows showed `cap_5s=50/51`, `sent_5s=50/51`, `drop_5s=0`, `abort_5s=0`, `fail_5s=0`, average JPEG about `16 KB` at `10 FPS`, average send about `8 ms`, RSSI around `-50 dBm`; after CHAT downgrade it showed about `6 FPS`, average JPEG about `12 KB`, RSSI `-47/-49 dBm`.
+- Backend Docker still did not receive real ESP32A camera UDP frames on `22345` during this hardware flash test: `/api/camera/stats` remained at the earlier local injection frame id and packet counts, although `ctrl_clients=1` proved the A-board control WebSocket was connected. Windows firewall currently has rules for `8765/tcp`, `12345/udp`, and `54321/udp`, but no `22345/udp` rule; attempting to add `AIGlass-Camera-22345-UDP-In` failed with `Access is denied`. Next hardware validation needs an admin-added inbound UDP allow rule for local port `22345`, or a deliberate shared-port fallback design.
