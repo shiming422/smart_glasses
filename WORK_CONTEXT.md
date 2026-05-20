@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 20:07 Asia/Shanghai
+Last updated: 2026-05-20 21:10 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -9,6 +9,7 @@ User requirement: this workspace must be kept under Git so changes can be rolled
 ## Clean Workspace
 
 - Workspace: `E:\Desktop\smart_glasses_esp32_workspace`
+- Active backend: `backend`
 - Active video + microphone firmware: `esp32_video_mic`
 - Active audio playback + IMU firmware: `esp32_audio_imu`
 - Preserved all-in-one reference: `reference_all_in_one_C`
@@ -18,9 +19,16 @@ Original source status:
 
 - A: `E:\Desktop\smart_glasses\main`
 - B/C were historical OpenAIglasses compile sources. Their active copies are now preserved inside this Git workspace as `esp32_audio_imu` and `reference_all_in_one_C`; do not rely on the old desktop OpenAIglasses paths.
-- Current cleaned backend folder: `E:\Desktop\OpenAIglasses_Navigation_clean`
+- Current cleaned backend folder: `E:\Desktop\smart_glasses_esp32_workspace\backend`
 
 ## Current Board Split
+
+## Wi-Fi / LAN Rule
+
+- Current PC Wi-Fi observed on 2026-05-20: `TP-LINK_5G_6C93` on `5 GHz`, WLAN IPv4 `192.168.1.106`.
+- ESP32 hardware must use the same router's 2.4 GHz SSID: `TP-LINK_6C93`.
+- Both ESP32 firmwares now default to `TP-LINK_6C93`; keep the password in local firmware config and avoid committing real `.env` files.
+- Backend discovery assumes the PC and both ESP32 boards are on the same LAN; backend UDP `54321` should reply with the PC LAN/Wi-Fi IP reachable from `TP-LINK_6C93`.
 
 ### ESP32A: Video + Microphone Uplink
 
@@ -38,6 +46,7 @@ Current role:
 Changes already made in the clean copy:
 
 - `main/main.c` now starts only Wi-Fi, camera, camera stream, and microphone stream.
+- `main/inc/secrets.h` currently targets the hardware 2.4 GHz SSID `TP-LINK_6C93`.
 - `main/src/app_backend.c` and `main/inc/app_backend.h` implement UDP discovery using request `AIGLASS_DISCOVER` and response prefix `AIGLASS_HOST:`.
 - `main/inc/sys_config.h` no longer has a hardcoded backend host; the stable backend HTTP/WebSocket port remains `8765`.
 - Camera and microphone WebSocket clients now wait for discovered backend host before connecting.
@@ -64,20 +73,22 @@ Current role:
 Changes already made in the clean copy:
 
 - Added explicit `DEVICE_ROLE_AUDIO_IMU` marker and comments at the top of `compile.ino`.
+- `compile.ino` now defaults to the hardware 2.4 GHz SSID `TP-LINK_6C93`.
 - Kept `BACKEND_HTTP_PORT=8765` and `BACKEND_UDP_PORT=12345`.
 
 ## Backend Contract To Keep In Sync
 
 Backend project currently lives at:
 
-`E:\Desktop\OpenAIglasses_Navigation_clean`
+`E:\Desktop\smart_glasses_esp32_workspace\backend`
 
-Docker runtime after desktop cleanup:
+Docker runtime after workspace unification:
 
 - Image: `aiglass-backend:local`
 - Container: `aiglass`
 - Frontend URL: `http://127.0.0.1:8765/`
 - Health URL: `http://127.0.0.1:8765/api/health`
+- Compose file: `backend\docker-compose.yml`
 
 Required backend interfaces:
 
@@ -91,9 +102,11 @@ Required backend interfaces:
 Backend `.env` items that must be checked before hardware testing:
 
 - `AIGLASS_UDP_PORT` should be `12345` for the current ESP32B firmware.
+- `AIGLASS_DISCOVERY_PORT` should be `54321` for ESP32A/ESP32B backend discovery.
 - `AIGLASS_AUDIO_WS_ENABLED` should be `1` when testing ESP32A microphone upload.
 - `AIGLASS_CAMERA_SOURCE=ws` is appropriate for direct `/ws/camera` JPEG input.
 - Backend discovery responder must listen on UDP `54321` and return the backend machine IP reachable by the ESP32 boards.
+- If running backend in Docker bridge mode, set `AIGLASS_DISCOVERY_HOST` in local `backend\.env` to the PC LAN/Wi-Fi IP reachable by both boards. Do not commit real `.env` files.
 
 Known mismatch from older docs:
 
@@ -116,8 +129,8 @@ Known mismatch from older docs:
 
 1. Flash and hardware-test `esp32_video_mic`; confirm logs show `backend discovered`, then camera and audio WebSocket URIs use the discovered IP.
 2. Build `esp32_audio_imu` with PlatformIO and confirm the role marker did not affect compilation.
-3. Update backend `.env` to match the board split, especially UDP `12345` and audio WebSocket enabled.
-4. Make/verify backend UDP discovery responder on `54321` so both ESP32 boards only need Wi-Fi SSID/password changes.
+3. Confirm `backend\.env` uses the PC LAN/Wi-Fi IP in `AIGLASS_DISCOVERY_HOST` before hardware discovery tests.
+4. Verify backend UDP discovery responder on `54321` from the ESP32 boards so both boards only need Wi-Fi SSID/password changes.
 5. Run hardware tests:
    - ESP32A video connected and viewer FPS updates.
    - ESP32A `/ws_audio` connects and backend replies `OK:STARTED`.
@@ -135,5 +148,7 @@ Known mismatch from older docs:
 - ESP32A was updated to use the same backend auto-discovery protocol as ESP32B. Build re-ran successfully after the change and produced `build\project-name.bin`.
 - `esp32_audio_imu` PlatformIO build was not run because `platformio` / `pio` is not currently in this shell PATH. Static role check passed: `DEVICE_ROLE_AUDIO_IMU=1`, `ENABLE_CAMERA=0`, `ENABLE_MIC_UPLINK=0`.
 - Git was initialized for this clean workspace. The initial baseline commit should include source/config/reference files plus this context file, while ignoring generated build artifacts.
-- Backend desktop cleanup kept only `E:\Desktop\OpenAIglasses_Navigation_clean` as the OpenAIglasses backend project. Docker rebuilt and started container `aiglass`; `GET /api/health` returned `OK`, and the frontend returned HTTP 200 with title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`.
-- Last checked Docker port mapping for `aiglass`: TCP `8765 -> 8765`, UDP `19283 -> 19283`. This is not yet aligned with ESP32B's required UDP `12345`; fix backend `.env`/compose and restart before IMU hardware testing.
+- Backend was moved into the same Git workspace at `backend`. The old desktop-only backend path `E:\Desktop\OpenAIglasses_Navigation_clean` was removed.
+- Backend local `.env` was aligned for the split boards: `AIGLASS_UDP_PORT=12345`, `AIGLASS_AUDIO_WS_ENABLED=1`, `AIGLASS_CAMERA_SOURCE=ws`. `backend\docker-compose.yml` now maps UDP `54321` for `AIGLASS_DISCOVER` in addition to TCP `8765` and UDP `12345`.
+- ESP32A and ESP32B Wi-Fi defaults were changed from `C413C413` to `TP-LINK_6C93`, the router's 2.4 GHz SSID for hardware use. PC was observed on sibling 5 GHz SSID `TP-LINK_5G_6C93` with WLAN IPv4 `192.168.1.106`.
+- After the Wi-Fi update, `esp32_video_mic` rebuilt successfully with ESP-IDF 5.5.2 and produced `build\project-name.bin`. `esp32_audio_imu` rebuilt successfully with local PlatformIO at `C:\Users\shiming\.platformio\penv\Scripts\pio.exe` and produced `.pio\build\xiao_esp32s3\firmware.bin`.
