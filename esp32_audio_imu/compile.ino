@@ -10,6 +10,7 @@
 #define DEVICE_ROLE_AUDIO_IMU 1
 #define ENABLE_CAMERA 0
 #define ENABLE_MIC_UPLINK 0
+#define ENABLE_SPEAKER_PLAYBACK 0
 #if ENABLE_CAMERA
 #include <esp_camera.h>
 #endif
@@ -206,15 +207,19 @@ QueueHandle_t qAudio;
 #endif
 WebsocketsClient wsImu;
 
+#if ENABLE_SPEAKER_PLAYBACK
 #define TTS_QUEUE_DEPTH 48
 typedef struct { uint16_t n; uint8_t data[2048]; } TTSChunk;
 QueueHandle_t qTTS;
 volatile bool tts_playing = false;
+#endif
 
 #if ENABLE_MIC_UPLINK
 I2SClass i2sIn;   // PDM RX (Mic)
 #endif
+#if ENABLE_SPEAKER_PLAYBACK
 I2SClass i2sOut;  // STD TX (Speaker)
+#endif
 #if ENABLE_MIC_UPLINK
 volatile bool run_audio_stream = false;
 volatile uint32_t g_mic_pause_until_ms = 0;
@@ -467,6 +472,7 @@ void taskMicUpload(void*){
 // ====================================================================
 // Speaker (I2S TX) + HTTP /stream.wav (chunked-safe)
 // ====================================================================
+#if ENABLE_SPEAKER_PLAYBACK
 void init_i2s_out(){
   i2sOut.setPins(I2S_SPK_BCLK, I2S_SPK_LRCK, I2S_SPK_DIN);
   if (!i2sOut.begin(I2S_MODE_STD, TTS_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
@@ -886,6 +892,11 @@ void taskTTSPlay(void*){
 }
 
 inline void tts_reset_queue(){ if (qTTS) xQueueReset(qTTS); }
+#else
+inline void startStreamWav(){}
+inline void stopStreamWav(){}
+inline void tts_reset_queue(){}
+#endif
 
 // ====================================================================
 // IMU (ICM42688 over SPI) 50Hz via UDP
@@ -1291,7 +1302,11 @@ void setup() {
 #if ENABLE_MIC_UPLINK
   init_i2s_in();
 #endif
+#if ENABLE_SPEAKER_PLAYBACK
   init_i2s_out();
+#else
+  Serial.println("[AUDIO] speaker playback disabled in this build");
+#endif
 
 #if ENABLE_CAMERA
 
@@ -1301,7 +1316,9 @@ void setup() {
 #if ENABLE_MIC_UPLINK
   qAudio  = xQueueCreate(AUDIO_QUEUE_DEPTH, sizeof(AudioChunk));
 #endif
+#if ENABLE_SPEAKER_PLAYBACK
   qTTS    = xQueueCreate(TTS_QUEUE_DEPTH, sizeof(TTSChunk));
+#endif
 
 #if ENABLE_CAMERA
   xTaskCreatePinnedToCore(taskCamCapture, "cam_cap", 10240, NULL, 4, NULL, 1);
@@ -1312,8 +1329,10 @@ void setup() {
   xTaskCreatePinnedToCore(taskMicCapture, "mic_cap",   4096, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(taskMicUpload,  "mic_upl",   4096, NULL, 2, NULL, 1);
 #endif
+#if ENABLE_SPEAKER_PLAYBACK
   xTaskCreatePinnedToCore(taskTTSPlay,    "tts_play",  4096, NULL, 2, NULL, 0);
   startStreamWav();
+#endif
 
 #if ENABLE_CAMERA
   wsCam.onEvent([](WebsocketsEvent ev, String){
