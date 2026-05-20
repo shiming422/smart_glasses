@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 22:57 Asia/Shanghai
+Last updated: 2026-05-20 23:01 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -191,3 +191,5 @@ Current frontend / blind-path runtime notes:
 - ESP32A received backend camera profile commands: navigation profile `SET:FRAMESIZE=VGA`, `SET:QUALITY=24`, `SET:FPS=10`; later chat profile `SET:QUALITY=28`, `SET:FPS=6`.
 - ESP32A UDP sender stabilized after initial startup: 5-second serial windows showed `cap_5s=50/51`, `sent_5s=50/51`, `drop_5s=0`, `abort_5s=0`, `fail_5s=0`, average JPEG about `16 KB` at `10 FPS`, average send about `8 ms`, RSSI around `-50 dBm`; after CHAT downgrade it showed about `6 FPS`, average JPEG about `12 KB`, RSSI `-47/-49 dBm`.
 - Backend Docker still did not receive real ESP32A camera UDP frames on `22345` during this hardware flash test: `/api/camera/stats` remained at the earlier local injection frame id and packet counts, although `ctrl_clients=1` proved the A-board control WebSocket was connected. Windows firewall currently has rules for `8765/tcp`, `12345/udp`, and `54321/udp`, but no `22345/udp` rule; attempting to add `AIGlass-Camera-22345-UDP-In` failed with `Access is denied`. Next hardware validation needs an admin-added inbound UDP allow rule for local port `22345`, or a deliberate shared-port fallback design.
+- After the user added Windows firewall rule `AIGlass-Camera-22345-UDP-In` for inbound UDP local port `22345`, backend Docker started receiving real ESP32A camera UDP frames. `/api/camera/stats` showed `packets=8711`, `completed_frames=597`, `complete_fps=6.23`, `avg_jpeg_bytes=13792`, `last_frame_age_ms=25`, `camera_source_name=esp32_udp`, `ctrl_clients=1`, with `invalid_packets=0`, `crc_errors=0`, and `timeouts=0`.
+- A follow-up `/api/camera/stats` sample showed continued live frames: `completed_frames=1002`, `complete_fps=7.01`, `last_frame_age_ms=154`, `invalid_packets=0`, `crc_errors=0`. Backend auto-tuning had sent `SET:FPS=8` (`auto_level=1`) after the 10-second drop window rose, so the hardware/video path is live and the remaining optimization target is reducing incomplete/stale UDP chunks during sustained Wi-Fi traffic.
