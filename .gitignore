@@ -22,3 +22,17 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Backend local secrets and large runtime assets
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/model/
+backend/mobileclip_blt.ts
+backend/runtime_logs/
+backend/recordings/
+
+# Firmware private local config
+esp32_video_mic/main/inc/secrets.h
+esp32_audio_imu/wifi_profile.h
+esp32_audio_imu/compile.ino.cpp
+backend/compile/wifi_profile.h

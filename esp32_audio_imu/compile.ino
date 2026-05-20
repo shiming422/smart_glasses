@@ -32,11 +32,11 @@ using namespace websockets;
 
 // ===== WiFi / Server =====
 #ifndef WIFI_SSID_VALUE
-#define WIFI_SSID_VALUE "TP-LINK_6C93"
+#define WIFI_SSID_VALUE "CHANGE_ME_2G_WIFI"
 #endif
 
 #ifndef WIFI_PASS_VALUE
-#define WIFI_PASS_VALUE "qazwsx1234"
+#define WIFI_PASS_VALUE "CHANGE_ME_WIFI_PASSWORD"
 #endif
 
 #ifndef WIFI_LOCAL_IP_VALUE

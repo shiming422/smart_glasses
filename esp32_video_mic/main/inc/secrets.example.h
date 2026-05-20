@@ -1,0 +1,6 @@
+#pragma once
+
+// Copy to secrets.h locally before flashing. Do not commit real passwords or API keys.
+#define SEC_WIFI_SSID       "YOUR_2G_WIFI_SSID"
+#define SEC_WIFI_PASS       "YOUR_WIFI_PASSWORD"
+#define SEC_DASHSCOPE_KEY   "YOUR_DASHSCOPE_API_KEY"

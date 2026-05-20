@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 21:10 Asia/Shanghai
+Last updated: 2026-05-20 21:12 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -27,7 +27,7 @@ Original source status:
 
 - Current PC Wi-Fi observed on 2026-05-20: `TP-LINK_5G_6C93` on `5 GHz`, WLAN IPv4 `192.168.1.106`.
 - ESP32 hardware must use the same router's 2.4 GHz SSID: `TP-LINK_6C93`.
-- Both ESP32 firmwares now default to `TP-LINK_6C93`; keep the password in local firmware config and avoid committing real `.env` files.
+- Both ESP32 local private config files should target `TP-LINK_6C93`; committed defaults/examples use placeholders, and real Wi-Fi passwords/API keys stay ignored locally.
 - Backend discovery assumes the PC and both ESP32 boards are on the same LAN; backend UDP `54321` should reply with the PC LAN/Wi-Fi IP reachable from `TP-LINK_6C93`.
 
 ### ESP32A: Video + Microphone Uplink
@@ -46,7 +46,8 @@ Current role:
 Changes already made in the clean copy:
 
 - `main/main.c` now starts only Wi-Fi, camera, camera stream, and microphone stream.
-- `main/inc/secrets.h` currently targets the hardware 2.4 GHz SSID `TP-LINK_6C93`.
+- `main/inc/secrets.h` is a local ignored private file. The current local copy targets the hardware 2.4 GHz SSID `TP-LINK_6C93`.
+- `main/inc/secrets.example.h` is the committed template for Wi-Fi and DashScope credentials.
 - `main/src/app_backend.c` and `main/inc/app_backend.h` implement UDP discovery using request `AIGLASS_DISCOVER` and response prefix `AIGLASS_HOST:`.
 - `main/inc/sys_config.h` no longer has a hardcoded backend host; the stable backend HTTP/WebSocket port remains `8765`.
 - Camera and microphone WebSocket clients now wait for discovered backend host before connecting.
@@ -55,7 +56,7 @@ Changes already made in the clean copy:
 
 Configuration rule:
 
-- For ESP32A normal use, only edit Wi-Fi SSID/password in `main/inc/secrets.h`; backend IP should be discovered automatically as long as the backend responder is running on the same LAN.
+- For ESP32A normal use, copy `main/inc/secrets.example.h` to `main/inc/secrets.h`, then edit Wi-Fi SSID/password and API key locally. Backend IP should be discovered automatically as long as the backend responder is running on the same LAN.
 
 ### ESP32B: Audio Playback + IMU Upload
 
@@ -73,7 +74,8 @@ Current role:
 Changes already made in the clean copy:
 
 - Added explicit `DEVICE_ROLE_AUDIO_IMU` marker and comments at the top of `compile.ino`.
-- `compile.ino` now defaults to the hardware 2.4 GHz SSID `TP-LINK_6C93`.
+- `compile.ino` reads optional local ignored `wifi_profile.h`; the current local copy targets the hardware 2.4 GHz SSID `TP-LINK_6C93`.
+- `wifi_profile.example.h` is the committed template for ESP32B Wi-Fi settings.
 - Kept `BACKEND_HTTP_PORT=8765` and `BACKEND_UDP_PORT=12345`.
 
 ## Backend Contract To Keep In Sync
@@ -116,6 +118,7 @@ Known mismatch from older docs:
 
 - Keep this clean workspace in Git.
 - Do not commit generated build outputs, `.pio`, runtime logs, recordings, or temporary files.
+- Do not commit private config files: `backend\.env`, `esp32_video_mic\main\inc\secrets.h`, or `esp32_audio_imu\wifi_profile.h`.
 - Before handing work back, run `git status --short`.
 - For meaningful changes, update `WORK_CONTEXT.md` first, then commit the source/config/context changes.
 - Use clear commit messages, for example `Initialize split ESP32 firmware workspace` or `Update backend contract for audio IMU board`.
@@ -150,5 +153,6 @@ Known mismatch from older docs:
 - Git was initialized for this clean workspace. The initial baseline commit should include source/config/reference files plus this context file, while ignoring generated build artifacts.
 - Backend was moved into the same Git workspace at `backend`. The old desktop-only backend path `E:\Desktop\OpenAIglasses_Navigation_clean` was removed.
 - Backend local `.env` was aligned for the split boards: `AIGLASS_UDP_PORT=12345`, `AIGLASS_AUDIO_WS_ENABLED=1`, `AIGLASS_CAMERA_SOURCE=ws`. `backend\docker-compose.yml` now maps UDP `54321` for `AIGLASS_DISCOVER` in addition to TCP `8765` and UDP `12345`.
-- ESP32A and ESP32B Wi-Fi defaults were changed from `C413C413` to `TP-LINK_6C93`, the router's 2.4 GHz SSID for hardware use. PC was observed on sibling 5 GHz SSID `TP-LINK_5G_6C93` with WLAN IPv4 `192.168.1.106`.
+- ESP32A and ESP32B local private Wi-Fi config files were changed from `C413C413` to `TP-LINK_6C93`, the router's 2.4 GHz SSID for hardware use. PC was observed on sibling 5 GHz SSID `TP-LINK_5G_6C93` with WLAN IPv4 `192.168.1.106`. These real private config files are intentionally ignored by Git; committed examples use placeholders.
 - After the Wi-Fi update, `esp32_video_mic` rebuilt successfully with ESP-IDF 5.5.2 and produced `build\project-name.bin`. `esp32_audio_imu` rebuilt successfully with local PlatformIO at `C:\Users\shiming\.platformio\penv\Scripts\pio.exe` and produced `.pio\build\xiao_esp32s3\firmware.bin`.
+- Backend Docker was rebuilt and started from `backend` with `docker compose up -d --build` after recovering a stuck Docker Desktop/WSL state. Container `aiglass` is healthy with ports `8765/tcp`, `12345/udp`, and `54321/udp` mapped. `GET http://127.0.0.1:8765/api/health` returned `OK`, and the frontend returned HTTP 200 with title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`. Logs show `[UDP] listening on 0.0.0.0:12345` and `[DISC] UDP discovery responder listening on port 54321`.
