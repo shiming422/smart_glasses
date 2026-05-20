@@ -1,12 +1,24 @@
 # Commit History
 
-本文件记录当前智能眼镜工程从拆分两块 ESP32 到 UDP 视频黄金基线的主要提交。
+本文件记录当前智能眼镜工程从拆分两块 ESP32 到 UDP 视频黄金基线、Phase 2 C++ 视频网关的主要提交。
 
-当前功能基线提交：`998659e`  
+当前功能基线提交：`8310830`
 远端仓库：`https://github.com/shiming422/smart_glasses.git`  
 远端分支：`main`
 
-## 当前黄金基线
+## 当前 Phase 2 基线
+
+`8310830 Add C++ camera gateway and mute audio board speaker`
+
+这一版在黄金 UDP 基线之上完成 Phase 2：
+
+- C++ gateway 默认接管 ESP32A UDP `22345` 分片 JPEG 重组、CRC、超时丢帧和旧帧丢弃。
+- Python 默认 `AIGLASS_CAMERA_SOURCE=cpp_gateway`，通过本机 TCP `127.0.0.1:22346` 接收完整 JPEG 和 stats。
+- Python UDP fallback (`AIGLASS_CAMERA_SOURCE=udp`) 和旧 `/ws/camera` fallback (`AIGLASS_CAMERA_SOURCE=ws`) 均保留。
+- Docker 构建 `/usr/local/bin/aiglass_cam_gateway` 并继续暴露 `8765/tcp`、`12345/udp`、`22345/udp`、`54321/udp`。
+- ESP32B 临时设置 `ENABLE_SPEAKER_PLAYBACK=0`，关闭扬声器和 `/stream.wav` 拉流，但 IMU UDP/WS 上传继续工作。
+
+## 黄金基线
 
 `998659e Mark golden hardware baseline before GitHub publish`
 
@@ -22,6 +34,7 @@
 
 | Commit | Time | Message |
 | --- | --- | --- |
+| `8310830` | 2026-05-21 00:22:55 +0800 | Add C++ camera gateway and mute audio board speaker |
 | `998659e` | 2026-05-20 23:12:47 +0800 | Mark golden hardware baseline before GitHub publish |
 | `902abd3` | 2026-05-20 23:02:21 +0800 | Record ESP32A UDP camera firewall validation |
 | `d56b7c0` | 2026-05-20 22:58:36 +0800 | Record ESP32A UDP camera hardware flash |
@@ -69,6 +82,10 @@ ESP32A 增加后端自动发现能力，不再依赖硬编码后端 IP。
 ### `998659e`
 
 用户确认效果很好后，把当前工程作为黄金硬件基线，并强制覆盖推送到个人 GitHub 仓库。
+
+### `8310830`
+
+Phase 2 C++ 视频网关：后端默认 `cpp_gateway`，C++ 子进程监听 ESP32A UDP `22345` 并向 Python TCP `22346` 推完整 JPEG/stats。验证包括 `py_compile`、Docker build、C++ gateway 本地 UDP 注入、Python UDP fallback、WebSocket fallback、前端 UTF-8 页面、B 板 PlatformIO 构建和 `COM30` 烧录；B 板串口确认扬声器禁用且 `/api/imu/status` 仍有 IMU 数据。
 
 ## 查看完整 Git 日志
 
