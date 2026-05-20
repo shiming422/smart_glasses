@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 23:11 Asia/Shanghai
+Last updated: 2026-05-20 23:18 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -189,6 +189,7 @@ Do not do yet:
 - User confirmed the current hardware effect is good. This snapshot should be treated as the first successful two-ESP32 + Docker backend baseline after the ESP32A UDP latest-frame camera rewrite.
 - The important working behavior is: ESP32A camera sends fragmented JPEG over UDP `22345`; backend receives real hardware frames with no CRC/invalid errors; browser preview is raw-first; navigation overlay is carried by `/ws/nav_events`; ESP32A control profile is carried by `/ws/camera_ctrl`; ESP32B remains audio playback + IMU.
 - Before publishing this snapshot, `python -m py_compile backend\app_main.py` passed. The GitHub target for the overwrite push is `https://github.com/shiming422/smart_glasses.git`, remote default branch `main`.
+- Documentation added after the golden baseline: root `README.md` explains the two-board architecture, backend/Docker startup, firewall rule, firmware flashing, ignored private/generated files, and rollback/fallback path. `COMMIT_HISTORY.md` records the engineering commit timeline through the golden baseline.
 
 ## Git Workflow Requirement
 
