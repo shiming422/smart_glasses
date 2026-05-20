@@ -1,0 +1,24 @@
+# Build outputs and tool caches
+build/
+.pio/
+managed_components/
+sdkconfig.old
+
+# Logs and transient runtime artifacts
+*.log
+*.tmp
+*.bak
+*.pid
+backend*.stdout.log
+backend*.stderr.log
+runtime_logs/
+run_logs/
+recordings/
+output/
+.playwright-cli/
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+
