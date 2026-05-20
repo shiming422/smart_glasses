@@ -21,6 +21,10 @@ struct WavFmt;
 #include <cstring>      // memcmp
 #include <WiFiUdp.h>
 #include <WiFiClient.h> 
+#include <lwip/inet.h>
+#include <lwip/sockets.h>
+#include <errno.h>
+#include <unistd.h>
 #include <SPI.h>        // <<< 改成 SPI
 using namespace websockets;
 
@@ -66,6 +70,7 @@ const uint16_t BACKEND_UDP_PORT  = 12345;
 
 // Discovered at runtime via UDP broadcast — do not hardcode.
 static char g_backend_host[64] = "";
+static IPAddress g_backend_ip;
 const char* SERVER_HOST = g_backend_host;
 const uint16_t SERVER_PORT = BACKEND_HTTP_PORT;
 
@@ -98,6 +103,16 @@ bool discover_backend(uint32_t timeout_ms = 8000) {
       if (strncmp(buf, DISCOVERY_PREFIX, strlen(DISCOVERY_PREFIX)) == 0) {
         const char* ip_start = buf + strlen(DISCOVERY_PREFIX);
         strncpy(g_backend_host, ip_start, sizeof(g_backend_host) - 1);
+        g_backend_host[sizeof(g_backend_host) - 1] = '\0';
+        char* trim = strpbrk(g_backend_host, "\r\n \t");
+        if (trim) {
+          *trim = '\0';
+        }
+        if (!g_backend_ip.fromString(g_backend_host)) {
+          Serial.printf("[DISC] invalid backend ip: %s\n", g_backend_host);
+          disc.stop();
+          return false;
+        }
         disc.stop();
         Serial.printf("[DISC] found backend: %s\n", g_backend_host);
         return true;
@@ -159,9 +174,13 @@ const int TTS_RATE = 16000;
 const char* UDP_HOST  = g_backend_host;
 const int   UDP_PORT  = BACKEND_UDP_PORT;
 
-WiFiUDP udp;
+static int imu_udp_socket = -1;
+static sockaddr_in imu_udp_dest = {};
 static unsigned long imu_packet_count = 0;
 static unsigned long imu_send_fail_count = 0;
+static unsigned int imu_send_fail_streak = 0;
+static const uint32_t IMU_SEND_INTERVAL_MS = 100; // 10 Hz leaves headroom for HTTP audio receive.
+static const unsigned int IMU_UDP_RECYCLE_FAIL_STREAK = 10;
 
 // ===== WS / Queues / I2S =====
 #if ENABLE_CAMERA
@@ -950,6 +969,53 @@ bool imu_read_once(float& tempC, float& ax, float& ay, float& az, float& gx, flo
 
 // 轻微平滑，便于观察；不改变 UDP 字段名
 static const float EMA_ALPHA = 0.20f;
+bool imu_udp_begin(){
+  if (imu_udp_socket >= 0) return true;
+
+  imu_udp_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+  if (imu_udp_socket < 0) {
+    Serial.printf("[IMU] UDP socket open failed errno=%d\n", errno);
+    return false;
+  }
+
+  memset(&imu_udp_dest, 0, sizeof(imu_udp_dest));
+  imu_udp_dest.sin_family = AF_INET;
+  imu_udp_dest.sin_port = htons(UDP_PORT);
+  imu_udp_dest.sin_addr.s_addr = inet_addr(g_backend_host);
+
+  int sendbuf = 4096;
+  setsockopt(imu_udp_socket, SOL_SOCKET, SO_SNDBUF, &sendbuf, sizeof(sendbuf));
+  return true;
+}
+
+void imu_udp_reopen(){
+  if (imu_udp_socket >= 0) {
+    close(imu_udp_socket);
+    imu_udp_socket = -1;
+  }
+  vTaskDelay(pdMS_TO_TICKS(20));
+  imu_udp_begin();
+}
+
+bool imu_udp_send_packet(const char* payload, size_t len, int& err, int& sent){
+  err = 0;
+  sent = 0;
+  if (!imu_udp_begin()) {
+    err = errno;
+    return false;
+  }
+
+  sent = sendto(imu_udp_socket,
+                payload,
+                len,
+                0,
+                reinterpret_cast<const sockaddr*>(&imu_udp_dest),
+                sizeof(imu_udp_dest));
+  if (sent == (int)len) return true;
+  err = errno;
+  return false;
+}
+
 bool  ema_inited = false;
 float ax_f=0, ay_f=0, az_f=0;
 
@@ -982,22 +1048,35 @@ void taskImuLoop(void*){
       "\"gyro\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f}}",
       ts, tempC, ax_f, ay_f, az_f, gx, gy, gz);
 
-    if (n > 0) {
-      udp.beginPacket(UDP_HOST, UDP_PORT);
-      udp.write((const uint8_t*)buf, n);
-      if (udp.endPacket()) {
+    if (n > 0 && WiFi.status() == WL_CONNECTED) {
+      int udp_err = 0;
+      int sent = 0;
+      if (imu_udp_send_packet(buf, (size_t)n, udp_err, sent)) {
         imu_packet_count++;
-        if ((imu_packet_count % 200) == 0) {
+        imu_send_fail_streak = 0;
+        if ((imu_packet_count % 50) == 0) {
           Serial.printf("[IMU] sent=%lu fail=%lu -> %s:%d\n", imu_packet_count, imu_send_fail_count, UDP_HOST, UDP_PORT);
         }
       } else {
         imu_send_fail_count++;
-        if (imu_send_fail_count <= 3 || (imu_send_fail_count % 20) == 0) {
-          Serial.printf("[IMU] UDP send failed #%lu -> %s:%d\n", imu_send_fail_count, UDP_HOST, UDP_PORT);
+        imu_send_fail_streak++;
+        if (imu_send_fail_count <= 3 || (imu_send_fail_count % 50) == 0) {
+          Serial.printf("[IMU] UDP send failed #%lu sent=%d/%d errno=%d -> %s:%d\n",
+                        imu_send_fail_count,
+                        sent,
+                        n,
+                        udp_err,
+                        UDP_HOST,
+                        UDP_PORT);
+        }
+        if (imu_send_fail_streak >= IMU_UDP_RECYCLE_FAIL_STREAK) {
+          imu_udp_reopen();
+          Serial.printf("[IMU] UDP socket recycled after %u consecutive failures\n", imu_send_fail_streak);
+          imu_send_fail_streak = 0;
         }
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(20)); // 50 Hz
+    vTaskDelay(pdMS_TO_TICKS(IMU_SEND_INTERVAL_MS));
   }
 }
 
@@ -1049,6 +1128,52 @@ void configure_wifi_network() {
   }
 }
 
+const char* wifi_status_name(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "IDLE";
+    case WL_NO_SSID_AVAIL: return "NO_SSID";
+    case WL_SCAN_COMPLETED: return "SCAN_DONE";
+    case WL_CONNECTED: return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+    case WL_DISCONNECTED: return "DISCONNECTED";
+    default: return "UNKNOWN";
+  }
+}
+
+void on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    Serial.printf("\n[WiFi] event disconnected reason=%u status=%d(%s)\n",
+                  info.wifi_sta_disconnected.reason,
+                  WiFi.status(),
+                  wifi_status_name(WiFi.status()));
+  } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+    Serial.printf("\n[WiFi] event connected ssid=%s channel=%u\n",
+                  info.wifi_sta_connected.ssid,
+                  info.wifi_sta_connected.channel);
+  } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    Serial.printf("\n[WiFi] event got ip=%s\n", WiFi.localIP().toString().c_str());
+  }
+}
+
+void scan_wifi_target() {
+  Serial.printf("[WiFi] target ssid=%s\n", WIFI_SSID);
+  int count = WiFi.scanNetworks(false, true);
+  Serial.printf("[WiFi] scan found %d networks\n", count);
+  for (int i = 0; i < count; i++) {
+    String ssid = WiFi.SSID(i);
+    if (ssid == WIFI_SSID || ssid.startsWith("TP-LINK")) {
+      Serial.printf("[WiFi] scan[%d] ssid=%s rssi=%d channel=%d enc=%d\n",
+                    i,
+                    ssid.c_str(),
+                    WiFi.RSSI(i),
+                    WiFi.channel(i),
+                    WiFi.encryptionType(i));
+    }
+  }
+  WiFi.scanDelete();
+}
+
 // ====================================================================
 // Setup / Loop
 // ====================================================================
@@ -1057,15 +1182,40 @@ void setup() {
   delay(300);
 
   WiFi.mode(WIFI_STA);
+  WiFi.onEvent(on_wifi_event);
+  WiFi.persistent(false);
+  WiFi.disconnect(true, true);
+  delay(300);
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
   configure_wifi_network();
+  scan_wifi_target();
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("[WiFi] connecting");
-  while (WiFi.status()!=WL_CONNECTED){ delay(300); Serial.print("."); }
+  uint32_t wifi_start_ms = millis();
+  uint32_t wifi_last_diag_ms = 0;
+  while (WiFi.status()!=WL_CONNECTED){
+    delay(300);
+    Serial.print(".");
+    uint32_t now = millis();
+    if (now - wifi_last_diag_ms >= 3000) {
+      wifi_last_diag_ms = now;
+      Serial.printf("\n[WiFi] status=%d(%s) elapsed=%lus\n",
+                    WiFi.status(),
+                    wifi_status_name(WiFi.status()),
+                    (unsigned long)((now - wifi_start_ms) / 1000));
+    }
+    if (now - wifi_start_ms >= 30000) {
+      Serial.println("\n[WiFi] reconnect cycle after 30s");
+      WiFi.disconnect(false, false);
+      delay(300);
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      wifi_start_ms = millis();
+    }
+  }
   Serial.println(" OK " + WiFi.localIP().toString());
 
   while (!discover_backend()) {
@@ -1080,8 +1230,11 @@ void setup() {
   Serial.println("[CAM] disabled in this build");
 #endif
 
-  udp.begin(0);
-  Serial.println("[IMU] UDP socket ready");
+  if (imu_udp_begin()) {
+    Serial.println("[IMU] UDP socket ready");
+  } else {
+    Serial.println("[IMU] UDP socket not ready, will retry in task");
+  }
 
 #if ENABLE_MIC_UPLINK
   init_i2s_in();

@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 21:50 Asia/Shanghai
+Last updated: 2026-05-20 22:02 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -138,21 +138,19 @@ Current frontend / blind-path runtime notes:
 
 ## Next Suggested Work
 
-1. Flash and hardware-test `esp32_video_mic`; confirm logs show `backend discovered`, then camera and audio WebSocket URIs use the discovered IP.
-2. Build `esp32_audio_imu` with PlatformIO and confirm the role marker did not affect compilation.
-3. Confirm `backend\.env` uses the PC LAN/Wi-Fi IP in `AIGLASS_DISCOVERY_HOST` before hardware discovery tests.
-4. Verify backend UDP discovery responder on `54321` from the ESP32 boards so both boards only need Wi-Fi SSID/password changes.
-5. Run hardware tests:
-   - ESP32A video connected and viewer FPS updates.
-   - ESP32A `/ws_audio` connects and backend replies `OK:STARTED`.
-   - ESP32B `/stream.wav` parses WAV header and plays audio.
-   - ESP32B IMU logs `sent=... fail=0` to UDP `12345`.
-6. After backend blind-path optimization, if the frontend still stutters during `盲道导航`, have the hardware window lower ESP32A camera resolution/JPEG quality/upload FPS one step and record FPS/JPEG size/RSSI before and after.
+1. Treat ESP32A and ESP32B as the current hardware-tested firmware baseline.
+2. If ESP32B IMU UDP failures start climbing again, keep the raw lwIP UDP socket path and first test lowering `IMU_SEND_INTERVAL_MS` from 100 ms to 200 ms before changing backend protocol.
+3. ESP32B `/stream.wav` currently reconnects often but does parse `WAV ok: 8000/16bit/mono (chunked=1)` and continues playing; backend/window work should inspect stream cadence if audio sounds choppy.
+4. For frontend blind-path stutter, have the hardware window lower ESP32A camera resolution/JPEG quality/upload FPS one step and record FPS/JPEG size/RSSI before and after.
+5. Keep checking `backend\.env` uses `AIGLASS_DISCOVERY_HOST=192.168.1.106` or the current PC LAN/Wi-Fi IP before hardware discovery tests.
 
 ## Verification Log
 
 2026-05-20:
 
+- ESP32A hardware close-loop test on `COM22` passed after flashing with ESP-IDF 5.5.2: serial showed Wi-Fi connected to `TP-LINK_6C93`, board IP `192.168.1.109`, backend discovered at `192.168.1.106:8765`, and both camera/audio WebSockets connected.
+- ESP32B hardware close-loop test on `COM30` passed after PlatformIO build plus direct `esptool` flashing. It scans and sees `TP-LINK_6C93` around RSSI `-49/-50` on channel 6, may need one reconnect cycle, then gets IP `192.168.1.107`, discovers backend `192.168.1.106`, initializes ICM42688 over SPI with `WHO_AM_I=0x47`, starts `/stream.wav`, and parses `WAV ok: 8000/16bit/mono (chunked=1)`.
+- ESP32B IMU UDP upload was changed from Arduino `WiFiUDP` packet send to a reused raw lwIP UDP socket, with `IMU_SEND_INTERVAL_MS=100` (10 Hz), backend IP parsing, Wi-Fi diagnostics, and socket reopen after consecutive failures. Serial validation after the change showed an initial transient `fail=32` during audio-stream startup, then stable progress from `sent=200` through `sent=650` with no further fail increase.
 - `esp32_video_mic` was built with ESP-IDF 5.5.2 using:
   `& C:\Users\shiming\esp\v5.5.2\esp-idf\export.ps1; idf.py --no-ccache build`
 - Build succeeded and produced `build\project-name.bin`.
