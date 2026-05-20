@@ -3022,6 +3022,9 @@ imu_store: List[Dict[str, Any]] = []
 imu_udp_packets = 0
 imu_udp_decode_errors = 0
 imu_udp_last_addr: Optional[Tuple[str, int]] = None
+imu_ws_in_packets = 0
+imu_ws_in_decode_errors = 0
+imu_ws_in_clients: Set[WebSocket] = set()
 
 def _wrap180(a: float) -> float:
     a = a % 360.0
@@ -3112,6 +3115,71 @@ def process_imu_and_maybe_store(d: Dict[str, Any]):
         }
         imu_store.append(item)
 
+def _normalize_imu_payload(d: Dict[str, Any]) -> Dict[str, Any]:
+    if 'ts' not in d and 'timestamp_ms' in d:
+        d['ts'] = d.pop('timestamp_ms')
+    return d
+
+@app.get("/api/imu/status")
+def imu_status():
+    return {
+        "udp_packets": imu_udp_packets,
+        "udp_decode_errors": imu_udp_decode_errors,
+        "udp_last_addr": list(imu_udp_last_addr) if imu_udp_last_addr else None,
+        "ws_in_packets": imu_ws_in_packets,
+        "ws_in_decode_errors": imu_ws_in_decode_errors,
+        "ws_in_clients": len(imu_ws_in_clients),
+        "store_len": len(imu_store),
+        "latest": imu_store[-1] if imu_store else None,
+    }
+
+@app.websocket("/ws/imu_in")
+async def ws_imu_in(ws: WebSocket):
+    global imu_ws_in_packets, imu_ws_in_decode_errors
+
+    await ws.accept()
+    imu_ws_in_clients.add(ws)
+    last_broadcast_ts = 0.0
+    client = f"{ws.client.host}:{ws.client.port}" if ws.client else "unknown"
+    print(f"[IMU-WS-IN] device connected: {client}", flush=True)
+    try:
+        while True:
+            message = await ws.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+
+            text = message.get("text")
+            if text is None and message.get("bytes") is not None:
+                text = message["bytes"].decode("utf-8", errors="ignore")
+            if not text:
+                continue
+
+            try:
+                d = _normalize_imu_payload(json.loads(text.strip()))
+                imu_ws_in_packets += 1
+                if imu_ws_in_packets == 1 or imu_ws_in_packets % 200 == 0:
+                    print(f"[IMU-WS-IN] packet #{imu_ws_in_packets} from {client}", flush=True)
+
+                process_imu_and_maybe_store(d)
+
+                now = time.monotonic()
+                if now - last_broadcast_ts >= 0.05:
+                    last_broadcast_ts = now
+                    await imu_broadcast(json.dumps(d))
+            except Exception as e:
+                imu_ws_in_decode_errors += 1
+                if imu_ws_in_decode_errors <= 3 or imu_ws_in_decode_errors % 20 == 0:
+                    preview = text[:120].strip()
+                    print(
+                        f"[IMU-WS-IN] parse error #{imu_ws_in_decode_errors} from {client} err={e} payload={preview!r}",
+                        flush=True,
+                    )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        imu_ws_in_clients.discard(ws)
+        print(f"[IMU-WS-IN] device disconnected: {client}", flush=True)
+
 # ---------- UDP 接收 IMU 并转发 ----------
 class UDPProto(asyncio.DatagramProtocol):
     def connection_made(self, transport):
@@ -3123,9 +3191,7 @@ class UDPProto(asyncio.DatagramProtocol):
         global imu_udp_packets, imu_udp_decode_errors, imu_udp_last_addr
         try:
             s = data.decode('utf-8', errors='ignore').strip()
-            d = json.loads(s)
-            if 'ts' not in d and 'timestamp_ms' in d:
-                d['ts'] = d.pop('timestamp_ms')
+            d = _normalize_imu_payload(json.loads(s))
             imu_udp_packets += 1
             if imu_udp_packets == 1 or imu_udp_packets % 200 == 0 or imu_udp_last_addr != addr:
                 imu_udp_last_addr = addr

@@ -130,6 +130,7 @@ bool discover_backend(uint32_t timeout_ms = 8000) {
 static const char* CAM_WS_PATH = "/ws/camera";
 #endif
 static const char* AUD_WS_PATH = "/ws_audio";
+static const char* IMU_WS_PATH = "/ws/imu_in";
 
 // ===== Camera config =====
 #if ENABLE_CAMERA
@@ -177,6 +178,8 @@ const int   UDP_PORT  = BACKEND_UDP_PORT;
 static int imu_udp_socket = -1;
 static sockaddr_in imu_udp_dest = {};
 static unsigned long imu_packet_count = 0;
+static unsigned long imu_ws_packet_count = 0;
+static unsigned long imu_ws_fail_count = 0;
 static unsigned long imu_send_fail_count = 0;
 static unsigned int imu_send_fail_streak = 0;
 static const uint32_t IMU_SEND_INTERVAL_MS = 100; // 10 Hz leaves headroom for HTTP audio receive.
@@ -201,6 +204,7 @@ typedef struct {
 } AudioChunk;
 QueueHandle_t qAudio;
 #endif
+WebsocketsClient wsImu;
 
 #define TTS_QUEUE_DEPTH 48
 typedef struct { uint16_t n; uint8_t data[2048]; } TTSChunk;
@@ -1016,6 +1020,36 @@ bool imu_udp_send_packet(const char* payload, size_t len, int& err, int& sent){
   return false;
 }
 
+bool imu_ws_send_packet(const char* payload){
+  static uint32_t next_connect_try_ms = 0;
+
+  if (!wsImu.available()) {
+    uint32_t now = millis();
+    if ((int32_t)(now - next_connect_try_ms) < 0) {
+      return false;
+    }
+    next_connect_try_ms = now + 3000;
+
+    Serial.printf("[IMU-WS] connecting ws://%s:%u%s\n", SERVER_HOST, SERVER_PORT, IMU_WS_PATH);
+    if (!wsImu.connect(SERVER_HOST, SERVER_PORT, IMU_WS_PATH)) {
+      imu_ws_fail_count++;
+      Serial.println("[IMU-WS] connect failed, UDP fallback");
+      return false;
+    }
+    Serial.println("[IMU-WS] connected");
+  }
+
+  bool ok = wsImu.send(payload);
+  wsImu.poll();
+  if (!ok) {
+    imu_ws_fail_count++;
+    Serial.println("[IMU-WS] send failed, closing");
+    wsImu.close();
+    return false;
+  }
+  return true;
+}
+
 bool  ema_inited = false;
 float ax_f=0, ay_f=0, az_f=0;
 
@@ -1049,6 +1083,24 @@ void taskImuLoop(void*){
       ts, tempC, ax_f, ay_f, az_f, gx, gy, gz);
 
     if (n > 0 && WiFi.status() == WL_CONNECTED) {
+      if (imu_ws_send_packet(buf)) {
+        imu_packet_count++;
+        imu_ws_packet_count++;
+        imu_send_fail_streak = 0;
+        if ((imu_ws_packet_count % 50) == 0) {
+          Serial.printf("[IMU-WS] sent=%lu total=%lu ws_fail=%lu udp_fail=%lu -> %s:%u%s\n",
+                        imu_ws_packet_count,
+                        imu_packet_count,
+                        imu_ws_fail_count,
+                        imu_send_fail_count,
+                        SERVER_HOST,
+                        SERVER_PORT,
+                        IMU_WS_PATH);
+        }
+        vTaskDelay(pdMS_TO_TICKS(IMU_SEND_INTERVAL_MS));
+        continue;
+      }
+
       int udp_err = 0;
       int sent = 0;
       if (imu_udp_send_packet(buf, (size_t)n, udp_err, sent)) {
