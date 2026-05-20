@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 21:20 Asia/Shanghai
+Last updated: 2026-05-20 20:04 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -14,11 +14,11 @@ User requirement: this workspace must be kept under Git so changes can be rolled
 - Preserved all-in-one reference: `reference_all_in_one_C`
 - Git repository root: `E:\Desktop\smart_glasses_esp32_workspace`
 
-Original source folders are intentionally kept:
+Original source status:
 
 - A: `E:\Desktop\smart_glasses\main`
-- B: `E:\Desktop\OpenAIglasses_for_Navigation-main\OpenAIglasses_for_Navigation-main\compile`
-- C: `E:\Desktop\original ecology\OpenAIglasses_for_Navigation-main\OpenAIglasses_for_Navigation-main\compile`
+- B/C were historical OpenAIglasses compile sources. Their active copies are now preserved inside this Git workspace as `esp32_audio_imu` and `reference_all_in_one_C`; do not rely on the old desktop OpenAIglasses paths.
+- Current cleaned backend folder: `E:\Desktop\OpenAIglasses_Navigation_clean`
 
 ## Current Board Split
 
@@ -47,7 +47,7 @@ Important current limitation:
 
 ### ESP32B: Audio Playback + IMU Upload
 
-Chosen base: B (`E:\Desktop\OpenAIglasses_for_Navigation-main\OpenAIglasses_for_Navigation-main\compile`).
+Chosen base: B historical compile source, now preserved as the clean copy below.
 
 Clean copy: `E:\Desktop\smart_glasses_esp32_workspace\esp32_audio_imu`
 
@@ -67,7 +67,14 @@ Changes already made in the clean copy:
 
 Backend project currently lives at:
 
-`E:\Desktop\OpenAIglasses_for_Navigation-main\OpenAIglasses_for_Navigation-main`
+`E:\Desktop\OpenAIglasses_Navigation_clean`
+
+Docker runtime after desktop cleanup:
+
+- Image: `aiglass-backend:local`
+- Container: `aiglass`
+- Frontend URL: `http://127.0.0.1:8765/`
+- Health URL: `http://127.0.0.1:8765/api/health`
 
 Required backend interfaces:
 
@@ -124,3 +131,5 @@ Known mismatch from older docs:
 - Remaining warnings are from disabled `/stream.wav` code paths inside `app_stream_audio.c` because `APP_WAV_STREAM_ENABLE=0`; they do not block the build.
 - `esp32_audio_imu` PlatformIO build was not run because `platformio` / `pio` is not currently in this shell PATH. Static role check passed: `DEVICE_ROLE_AUDIO_IMU=1`, `ENABLE_CAMERA=0`, `ENABLE_MIC_UPLINK=0`.
 - Git was initialized for this clean workspace. The initial baseline commit should include source/config/reference files plus this context file, while ignoring generated build artifacts.
+- Backend desktop cleanup kept only `E:\Desktop\OpenAIglasses_Navigation_clean` as the OpenAIglasses backend project. Docker rebuilt and started container `aiglass`; `GET /api/health` returned `OK`, and the frontend returned HTTP 200 with title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`.
+- Last checked Docker port mapping for `aiglass`: TCP `8765 -> 8765`, UDP `19283 -> 19283`. This is not yet aligned with ESP32B's required UDP `12345`; fix backend `.env`/compose and restart before IMU hardware testing.
