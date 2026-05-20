@@ -40,6 +40,9 @@
   #canvas{
     position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;z-index:10;
   }
+  #navOverlayCanvas{
+    position:absolute;inset:0;width:100%;height:100%;display:block;z-index:12;pointer-events:none;
+  }
 
   .imu-float{
     position:absolute;left:12px;top:12px;z-index:35;
@@ -136,7 +139,7 @@
 <body>
 <div class="app" id="appLayout">
   <section class="stage" id="stage">
-    <div class="canvas-wrap" id="canvasWrap"><canvas id="canvas"></canvas></div>
+    <div class="canvas-wrap" id="canvasWrap"><canvas id="canvas"></canvas><canvas id="navOverlayCanvas"></canvas></div>
 
     <div class="imu-float">
       <div class="imu-drag-handle" id="imu_drag_handle">
@@ -237,6 +240,6 @@
   "imports": { "three": "https://unpkg.com/three@0.155.0/build/three.module.js" }
 }</script>
 
-<script type="module" src="/static/main.js?v=20260520-utf8-nav-latency"></script>
+<script type="module" src="/static/main.js?v=20260520-udp-camera-nav-events"></script>
 </body>
 </html>

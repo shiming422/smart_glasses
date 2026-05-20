@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-20 22:02 Asia/Shanghai
+Last updated: 2026-05-20 22:39 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -39,7 +39,8 @@ Clean copy: `E:\Desktop\smart_glasses_esp32_workspace\esp32_video_mic`
 Current role:
 
 - Discovers backend IP automatically via UDP broadcast on `54321`.
-- Camera uploads complete JPEG frames to `ws://<discovered-backend>:8765/ws/camera`.
+- Camera uploads JPEG latest-frame stream to backend `UDP 22345`; each frame is split into 1024-byte UDP payload chunks with the 32-byte little-endian `AIGC` header and CRC32.
+- Camera WebSocket is no longer the main video path. A lightweight control channel connects to `ws://<discovered-backend>:8765/ws/camera_ctrl`.
 - PDM microphone uploads PCM16 mono 16 kHz chunks to `ws://<discovered-backend>:8765/ws_audio`.
 - This board does not own `/stream.wav`, TTS, local HTTP preview, or IMU.
 
@@ -50,7 +51,10 @@ Changes already made in the clean copy:
 - `main/inc/secrets.example.h` is the committed template for Wi-Fi and DashScope credentials.
 - `main/src/app_backend.c` and `main/inc/app_backend.h` implement UDP discovery using request `AIGLASS_DISCOVER` and response prefix `AIGLASS_HOST:`.
 - `main/inc/sys_config.h` no longer has a hardcoded backend host; the stable backend HTTP/WebSocket port remains `8765`.
-- Camera and microphone WebSocket clients now wait for discovered backend host before connecting.
+- Camera UDP sender, camera control WebSocket, and microphone WebSocket clients now wait for discovered backend host before connecting.
+- `main/src/app_stream_cam.c` now uses three pinned tasks: `cam_capture_task` on core 0, `cam_udp_send_task` on core 1, and `cam_ctrl_ws_task` on core 1. Camera queue depth is fixed at `1`; sending aborts an old frame if a newer frame is already waiting.
+- A-board camera defaults are `FRAMESIZE_VGA`, `CAMERA_JPEG_QUAL=24`, `APP_CAM_DEFAULT_FPS=10`, `APP_CAM_UDP_PAYLOAD=1024`, and `APP_CAM_UDP_PORT=22345`.
+- Control commands kept for backend mode linkage: `SET:FPS=...`, `SET:QUALITY=...`, and `SET:FRAMESIZE=...`.
 - `APP_WAV_STREAM_ENABLE` is `0`, so this board does not pull backend audio playback.
 - `main/CMakeLists.txt` no longer compiles local HTTP, TTS, or IMU modules for this board.
 
@@ -91,11 +95,17 @@ Docker runtime after workspace unification:
 - Frontend URL: `http://127.0.0.1:8765/`
 - Health URL: `http://127.0.0.1:8765/api/health`
 - Compose file: `backend\docker-compose.yml`
+- Docker port mapping must include TCP `8765`, UDP `12345`, UDP `22345`, and UDP `54321`.
 
 Required backend interfaces:
 
 - `GET /api/health`
-- `WebSocket /ws/camera`: binary JPEG frames from ESP32A.
+- `UDP 22345`: primary ESP32A fragmented JPEG latest-frame stream. Packet header is fixed little-endian, packed, 32 bytes: magic literal bytes `AIGC`, version `1`, header length `32`, source id `1`, frame id, timestamp ms, frame length, frame CRC32, chunk index/count, and payload length.
+- `WebSocket /ws/camera_ctrl`: ESP32A lightweight camera control channel. Backend sends profile commands for navigation/chat modes and UDP auto-downgrade.
+- `WebSocket /ws/camera`: binary JPEG frames from ESP32A, retained only as manual debug/fallback when `AIGLASS_CAMERA_SOURCE=ws` or `esp32_ws`.
+- `WebSocket /ws/viewer`: browser camera preview, now raw-JPEG-first. Navigation mode does not require backend annotated JPEG re-encode.
+- `WebSocket /ws/nav_events`: browser navigation JSON events for overlay drawing in the frontend canvas.
+- `GET /api/camera/stats`: camera transport stats including protocol, UDP FPS, JPEG average, drop/timeout/CRC counters, control clients, and latest frame age.
 - `WebSocket /ws_audio`: text controls plus PCM16 mic chunks from ESP32A.
 - `GET /stream.wav`: WAV/PCM audio stream to ESP32B.
 - `UDP 12345`: IMU JSON from ESP32B.
@@ -106,21 +116,24 @@ Backend `.env` items that must be checked before hardware testing:
 - `AIGLASS_UDP_PORT` should be `12345` for the current ESP32B firmware.
 - `AIGLASS_DISCOVERY_PORT` should be `54321` for ESP32A/ESP32B backend discovery.
 - `AIGLASS_AUDIO_WS_ENABLED` should be `1` when testing ESP32A microphone upload.
-- `AIGLASS_CAMERA_SOURCE=ws` is appropriate for direct `/ws/camera` JPEG input.
+- `AIGLASS_CAMERA_SOURCE=udp` is the default primary camera input.
+- `AIGLASS_CAMERA_UDP_PORT=22345`, `AIGLASS_CAMERA_UDP_FRAME_TTL_MS=250`, and `AIGLASS_CAMERA_CTRL_WS_ENABLED=1` should be set for the A-board UDP transport.
+- `AIGLASS_NAV_DIRECT_VIEWER=1` keeps `/ws/viewer` raw-first during navigation while `/ws/nav_events` carries overlay guidance.
+- Use `AIGLASS_CAMERA_SOURCE=ws` only for the old direct `/ws/camera` JPEG debug fallback.
 - Backend discovery responder must listen on UDP `54321` and return the backend machine IP reachable by the ESP32 boards.
 - If running backend in Docker bridge mode, set `AIGLASS_DISCOVERY_HOST` in local `backend\.env` to the PC LAN/Wi-Fi IP reachable by both boards. Do not commit real `.env` files.
 
-Known mismatch from older docs:
+Fallback rule:
 
-- Some old docs say `/ws/camera` is historical or rejected. Current `app_main.py` still implements and accepts `/ws/camera`, then selects camera source `esp32_ws`.
+- If UDP camera testing fails, switch backend local `.env` to `AIGLASS_CAMERA_SOURCE=ws` and temporarily restore/use the legacy A-board `/ws/camera` path for debug only. Normal operation should return to UDP `22345`.
 
 Current frontend / blind-path runtime notes:
 
-- Backend now serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` also cache-busts `main.js` with version `20260520-utf8-nav-latency`.
-- Blind-path frontend preview no longer forces a decode + annotate + JPEG re-encode on every viewer frame. `AIGLASS_NAV_VIEWER_FRAME_DIV` controls the annotated preview cadence, and `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS=1` sends the original ESP32 JPEG frames between annotated frames so the browser preview stays smooth while navigation inference continues.
-- The backend protocol did not change: ESP32A still sends JPEG frames to `WebSocket /ws/camera`, browsers still read `WebSocket /ws/viewer`, and navigation state/control endpoints are unchanged.
-- Local ignored `backend\.env` was set to `AIGLASS_NAV_VIEWER_FRAME_DIV=4` and `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS=1`; committed defaults are documented in `backend\.env.example`.
-- If blind-path preview is still very laggy after this backend change, ask the hardware/ESP32 window to measure ESP32A camera upload FPS, JPEG byte size, camera frame size/quality, and Wi-Fi RSSI on `TP-LINK_6C93`. At that point the likely remaining bottleneck is ESP32A camera encode/upload or 2.4 GHz Wi-Fi quality, not the frontend page encoding.
+- Backend serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` now cache-busts `main.js` with version `20260520-udp-camera-nav-events`.
+- `/ws/viewer` receives raw JPEG frames by default. The backend no longer re-encodes blind-path annotated JPEGs for the normal preview path when `AIGLASS_NAV_DIRECT_VIEWER=1`.
+- `/ws/nav_events` sends structured navigation results (`type=nav_result`, mode, guidance, latency, camera sequence/frame id, timestamp). The frontend draws direction/status text on transparent `navOverlayCanvas`.
+- AI inference and browser preview are decoupled: slow navigation inference should not create a video backlog. TTS and `/ws_ui` text broadcast remain.
+- If blind-path preview is still laggy after this UDP/latest-frame change, ask the hardware/ESP32 window to measure ESP32A serial stats: capture FPS, UDP complete-send FPS, queue drop, abort-old-frame, average JPEG bytes, average/max send ms, RSSI, and task core numbers. Likely remaining causes are ESP32A camera encode/upload time or 2.4 GHz Wi-Fi quality.
 
 ## Git Workflow Requirement
 
@@ -138,10 +151,10 @@ Current frontend / blind-path runtime notes:
 
 ## Next Suggested Work
 
-1. Treat ESP32A and ESP32B as the current hardware-tested firmware baseline.
+1. Flash the rebuilt ESP32A firmware, then confirm serial lines include `cam_capture_task core=0`, `cam_udp_send_task core=1`, `camera_ctrl connected`, and 5-second UDP camera stats.
 2. If ESP32B IMU UDP failures start climbing again, keep the raw lwIP UDP socket path and first test lowering `IMU_SEND_INTERVAL_MS` from 100 ms to 200 ms before changing backend protocol.
 3. ESP32B `/stream.wav` currently reconnects often but does parse `WAV ok: 8000/16bit/mono (chunked=1)` and continues playing; backend/window work should inspect stream cadence if audio sounds choppy.
-4. For frontend blind-path stutter, have the hardware window lower ESP32A camera resolution/JPEG quality/upload FPS one step and record FPS/JPEG size/RSSI before and after.
+4. During ESP32A hardware test, open `GET /api/camera/stats` and confirm `protocol=udp`, `complete_fps >= 8`, `last_frame_age_ms < 350`, and no rising CRC/timeout counters.
 5. Keep checking `backend\.env` uses `AIGLASS_DISCOVERY_HOST=192.168.1.106` or the current PC LAN/Wi-Fi IP before hardware discovery tests.
 
 ## Verification Log
@@ -166,3 +179,10 @@ Current frontend / blind-path runtime notes:
 - Backend Docker was rebuilt and started from `backend` with `docker compose up -d --build` after recovering a stuck Docker Desktop/WSL state. Container `aiglass` is healthy with ports `8765/tcp`, `12345/udp`, and `54321/udp` mapped. `GET http://127.0.0.1:8765/api/health` returned `OK`, and the frontend returned HTTP 200 with title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`.
 - Local ignored `backend\.env` was updated to `AIGLASS_DISCOVERY_HOST=192.168.1.106` and `AIGLASS_DISCOVERY_PORT=54321`; after `docker compose up -d`, logs show `[DISC] UDP discovery responder listening on port 54321, advertised IP=192.168.1.106` and `[UDP] listening on 0.0.0.0:12345`.
 - Backend frontend/latency pass: `python -m py_compile backend\app_main.py` passed. Docker was rebuilt with `docker compose up -d --build`; container `aiglass` is healthy. `GET /api/health` returned `OK`. `GET /` returned `Content-Type: text/html; charset=utf-8`, no-store cache headers, title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`, and visible Chinese `盲道导航`. `GET /static/main.js?v=20260520-utf8-nav-latency` returned `Content-Type: text/javascript; charset=utf-8`, no-store cache headers, and Chinese text intact. Docker logs show `nav_viewer_frame_div=4` and `nav_raw_between_overlays=True`. A short `blind_nav` runtime test with the live ESP32 camera completed 6 navigation inferences with 0 errors, then returned to `CHAT`.
+- A-board video transport was changed from WebSocket JPEG to UDP latest-frame JPEG on `22345`, with control WebSocket `/ws/camera_ctrl`. B-board structure was not changed.
+- `esp32_video_mic` rebuilt successfully with ESP-IDF 5.5.2 using `& C:\Users\shiming\esp\v5.5.2\esp-idf\export.ps1; idf.py --no-ccache build`; output `build\project-name.bin`. Only existing disabled `/stream.wav` unused warnings remained.
+- `python -m py_compile backend\app_main.py` passed after the UDP camera backend changes.
+- Docker was rebuilt with `docker compose up -d --build`; container `aiglass` is healthy with ports `8765/tcp`, `12345/udp`, `22345/udp`, and `54321/udp` mapped. `GET /api/health` returned `OK`.
+- `GET /api/camera/stats` returned `protocol=udp`, `udp_port=22345`, `ctrl_ws_enabled=true`. A local fragmented UDP JPEG injection sent 24 complete test frames through `22345`; stats showed `completed_frames=24`, `complete_fps=12.44`, `avg_jpeg_bytes=5764`, `last_frame_age_ms=130`, and zero invalid/CRC/timeout/drop counters.
+- Frontend verification returned `GET /` HTTP 200 with `Content-Type: text/html; charset=utf-8`, title `HEVC Bridge 相机 + 实时语音识别 + IMU 可视化`, and Chinese `盲道导航` intact. `GET /static/main.js?v=20260520-udp-camera-nav-events` returned `Content-Type: text/javascript; charset=utf-8` and contains `/ws/nav_events`.
+- Hardware flashing and 60-second blind-path live walk test were not run in this backend window after the UDP rewrite; the other ESP32/hardware window should perform those checks.

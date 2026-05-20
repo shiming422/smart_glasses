@@ -1,6 +1,6 @@
 ﻿# app_main.py
 # -*- coding: utf-8 -*-
-import os, sys, time, json, asyncio, base64, audioop
+import os, sys, time, json, asyncio, base64, audioop, struct, zlib
 from typing import Any, Dict, Optional, Tuple, List, Callable, Set, Deque
 from collections import deque
 from dataclasses import dataclass, field
@@ -124,9 +124,14 @@ PATH_FRAME_DIV = max(1, _env_int("AIGLASS_PATH_FRAME_DIV", 2))
 TRAFFIC_FRAME_DIV = max(1, _env_int("AIGLASS_TRAFFIC_FRAME_DIV", 2))
 NAV_VIEWER_FRAME_DIV = max(1, _env_int("AIGLASS_NAV_VIEWER_FRAME_DIV", 4))
 NAV_RAW_BETWEEN_OVERLAYS = _env_flag("AIGLASS_NAV_RAW_BETWEEN_OVERLAYS", True)
+CAMERA_UDP_PORT = max(1, min(65535, _env_int("AIGLASS_CAMERA_UDP_PORT", 22345)))
+CAMERA_UDP_FRAME_TTL_MS = max(50, _env_int("AIGLASS_CAMERA_UDP_FRAME_TTL_MS", 250))
+CAMERA_UDP_MAX_FRAME_BYTES = max(65536, _env_int("AIGLASS_CAMERA_UDP_MAX_FRAME_BYTES", 512 * 1024))
+CAMERA_CTRL_WS_ENABLED = _env_flag("AIGLASS_CAMERA_CTRL_WS_ENABLED", True)
+CAMERA_SOURCE_DEFAULT = os.getenv("AIGLASS_CAMERA_SOURCE", "udp").strip().lower()
 RECORD_FRAME_FPS = max(1, _env_int("AIGLASS_RECORD_FRAME_FPS", 10))
 AUTO_RECORD_ENABLED = _env_flag("AIGLASS_AUTO_RECORD", False)
-NAV_DIRECT_VIEWER_ENABLED = _env_flag("AIGLASS_NAV_DIRECT_VIEWER", False)
+NAV_DIRECT_VIEWER_ENABLED = _env_flag("AIGLASS_NAV_DIRECT_VIEWER", True)
 CAMERA_WS_HANDOVER_STALE_SEC = max(
     1.0, _env_float("AIGLASS_CAMERA_WS_HANDOVER_STALE_SEC", 3.0)
 )
@@ -163,12 +168,13 @@ print(
     f"send_timeout_ms={VIEWER_SEND_TIMEOUT_MS}, overlay_stale_ms={OVERLAY_STALE_MS}, "
     f"path_frame_div={PATH_FRAME_DIV}, traffic_frame_div={TRAFFIC_FRAME_DIV}, "
     f"nav_viewer_frame_div={NAV_VIEWER_FRAME_DIV}, nav_raw_between_overlays={NAV_RAW_BETWEEN_OVERLAYS}, "
+    f"camera_udp_port={CAMERA_UDP_PORT}, camera_udp_ttl_ms={CAMERA_UDP_FRAME_TTL_MS}, "
     f"record_fps={RECORD_FRAME_FPS}, "
     f"auto_record={AUTO_RECORD_ENABLED}, nav_direct_viewer={NAV_DIRECT_VIEWER_ENABLED}, "
     f"handover_stale_sec={CAMERA_WS_HANDOVER_STALE_SEC}",
     flush=True,
 )
-print("[CAM SRC] ESP32-S3 WebSocket mode", flush=True)
+print(f"[CAM SRC] default={CAMERA_SOURCE_DEFAULT or 'udp'} (UDP latest-frame preferred)", flush=True)
 print(
     f"[VIEWER CFG] postprocess={VIEWER_POSTPROCESS_ENABLED}, "
     f"b={VIEWER_COLOR_BRIGHTNESS}, c={VIEWER_COLOR_CONTRAST}, "
@@ -359,7 +365,18 @@ camera_latest_seq: int = 0
 camera_last_frame_monotonic: float = 0.0
 camera_processor_task: Optional[asyncio.Task] = None
 camera_source_task: Optional[asyncio.Task] = None
-camera_source_key: str = "esp32_ws"
+
+
+def _normalize_camera_source_key(source_key: str) -> str:
+    value = str(source_key or "").strip().lower()
+    if value in {"ws", "websocket", "esp32_ws"}:
+        return "esp32_ws"
+    if value in {"udp", "esp32_udp"}:
+        return "udp"
+    return "udp"
+
+
+camera_source_key: str = _normalize_camera_source_key(CAMERA_SOURCE_DEFAULT)
 camera_source_name: str = ""
 camera_source_active: bool = False
 camera_source_waiting: bool = False
@@ -388,6 +405,59 @@ nav_infer_last_guidance: str = ""
 nav_infer_last_error: str = ""
 nav_infer_last_completed_monotonic: float = 0.0
 
+CAMERA_UDP_MAGIC = 0x43474941
+CAMERA_UDP_VERSION = 1
+CAMERA_UDP_HEADER_LEN = 32
+CAMERA_UDP_HEADER = struct.Struct("<IBBBBIIIIHHHH")
+CAMERA_UDP_SOURCE_NAME = "esp32_udp"
+
+
+@dataclass
+class CameraUdpAssembly:
+    source_id: int
+    frame_id: int
+    timestamp_ms: int
+    frame_len: int
+    frame_crc32: int
+    chunk_count: int
+    created_at: float
+    addr: Tuple[str, int]
+    chunks: List[Optional[bytes]]
+    received_count: int = 0
+    received_bytes: int = 0
+
+
+@dataclass
+class CameraUdpStats:
+    packets: int = 0
+    completed_frames: int = 0
+    stale_chunks: int = 0
+    duplicate_chunks: int = 0
+    invalid_packets: int = 0
+    crc_errors: int = 0
+    timeouts: int = 0
+    dropped_incomplete: int = 0
+    oversize_frames: int = 0
+    last_addr: Optional[Tuple[str, int]] = None
+    last_frame_id: int = 0
+    last_source_id: int = 0
+    last_frame_len: int = 0
+    last_timestamp_ms: int = 0
+    last_completed_monotonic: float = 0.0
+    completed_window: Deque[Tuple[float, int]] = field(default_factory=lambda: deque(maxlen=300))
+    event_window: Deque[Tuple[float, str]] = field(default_factory=lambda: deque(maxlen=500))
+
+
+camera_udp_assemblies: Dict[int, CameraUdpAssembly] = {}
+camera_udp_stats = CameraUdpStats()
+camera_udp_transport: Optional[asyncio.DatagramTransport] = None
+camera_ctrl_clients: Set[WebSocket] = set()
+camera_ctrl_last_command: str = ""
+camera_ctrl_last_sent_monotonic: float = 0.0
+camera_udp_auto_level: int = 0
+camera_udp_auto_last_check_monotonic: float = 0.0
+nav_event_clients: Set[WebSocket] = set()
+
 # 【新增】盲道导航相关全局变量
 blind_path_navigator = None
 navigation_active = False
@@ -408,6 +478,10 @@ traffic_model_preloaded = False
 
 
 def _camera_source_label(source_key: str) -> str:
+    if source_key == "udp":
+        return "ESP32 UDP Camera"
+    if source_key == "esp32_ws":
+        return "ESP32 WS Camera"
     return "ESP32 Camera"
 
 
@@ -419,8 +493,273 @@ def _update_camera_waiting_flag() -> None:
 def _set_selected_camera_source(source_key: str) -> None:
     global camera_source_key
 
-    camera_source_key = source_key
+    camera_source_key = _normalize_camera_source_key(source_key)
     _update_camera_waiting_flag()
+
+
+def _camera_udp_note_event(kind: str, now: Optional[float] = None) -> None:
+    camera_udp_stats.event_window.append((time.monotonic() if now is None else now, kind))
+
+
+def _camera_udp_prune_windows(now: Optional[float] = None) -> None:
+    cutoff = (time.monotonic() if now is None else now) - 10.0
+    while camera_udp_stats.completed_window and camera_udp_stats.completed_window[0][0] < cutoff:
+        camera_udp_stats.completed_window.popleft()
+    while camera_udp_stats.event_window and camera_udp_stats.event_window[0][0] < cutoff:
+        camera_udp_stats.event_window.popleft()
+
+
+def _camera_udp_complete_fps(now: Optional[float] = None) -> float:
+    now_ts = time.monotonic() if now is None else now
+    _camera_udp_prune_windows(now_ts)
+    if len(camera_udp_stats.completed_window) < 2:
+        return float(len(camera_udp_stats.completed_window))
+    span = max(0.001, camera_udp_stats.completed_window[-1][0] - camera_udp_stats.completed_window[0][0])
+    return float(len(camera_udp_stats.completed_window) - 1) / span
+
+
+def _camera_udp_avg_jpeg_bytes(now: Optional[float] = None) -> int:
+    now_ts = time.monotonic() if now is None else now
+    _camera_udp_prune_windows(now_ts)
+    if not camera_udp_stats.completed_window:
+        return 0
+    return int(sum(size for _, size in camera_udp_stats.completed_window) / len(camera_udp_stats.completed_window))
+
+
+def _camera_udp_drop_ratio(now: Optional[float] = None) -> float:
+    now_ts = time.monotonic() if now is None else now
+    _camera_udp_prune_windows(now_ts)
+    complete = len(camera_udp_stats.completed_window)
+    drops = sum(1 for _, kind in camera_udp_stats.event_window if kind != "complete")
+    total = complete + drops
+    return 0.0 if total <= 0 else float(drops) / float(total)
+
+
+def _camera_profile_for_state(state: Optional[str]) -> List[str]:
+    nav_states = {
+        "BLINDPATH_NAV",
+        "SEEKING_CROSSWALK",
+        "WAIT_TRAFFIC_LIGHT",
+        "CROSSING",
+        "SEEKING_NEXT_BLINDPATH",
+        "TRAFFIC_LIGHT_DETECTION",
+    }
+    if state in nav_states:
+        return ["SET:FRAMESIZE=VGA", "SET:QUALITY=24", "SET:FPS=10"]
+    if state in {None, "CHAT", "IDLE"}:
+        return ["SET:QUALITY=28", "SET:FPS=6"]
+    return []
+
+
+async def _camera_ctrl_send_text(text: str, *, reason: str = "") -> int:
+    global camera_ctrl_last_command, camera_ctrl_last_sent_monotonic
+    if not CAMERA_CTRL_WS_ENABLED or not text:
+        return 0
+
+    camera_ctrl_last_command = text
+    camera_ctrl_last_sent_monotonic = time.monotonic()
+    dead: List[WebSocket] = []
+    sent = 0
+    for ws in list(camera_ctrl_clients):
+        try:
+            await ws.send_text(text)
+            sent += 1
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        camera_ctrl_clients.discard(ws)
+    if sent:
+        suffix = f" ({reason})" if reason else ""
+        print(f"[CAM CTRL] sent {text} to {sent} client(s){suffix}", flush=True)
+    return sent
+
+
+async def _apply_camera_profile_for_state(state: Optional[str], *, reason: str = "") -> None:
+    for cmd in _camera_profile_for_state(state):
+        await _camera_ctrl_send_text(cmd, reason=reason or str(state or "unknown"))
+
+
+async def _camera_udp_maybe_autotune() -> None:
+    global camera_udp_auto_level, camera_udp_auto_last_check_monotonic
+
+    now = time.monotonic()
+    if now - camera_udp_auto_last_check_monotonic < 10.0:
+        return
+    camera_udp_auto_last_check_monotonic = now
+
+    ratio = _camera_udp_drop_ratio(now)
+    if ratio <= 0.15:
+        return
+
+    if camera_udp_auto_level < 1:
+        camera_udp_auto_level = 1
+        await _camera_ctrl_send_text("SET:FPS=8", reason=f"udp_drop_ratio={ratio:.2f}")
+    else:
+        camera_udp_auto_level = 2
+        await _camera_ctrl_send_text("SET:QUALITY=30", reason=f"udp_drop_ratio={ratio:.2f}")
+
+
+async def nav_event_broadcast(payload: Dict[str, Any]) -> None:
+    if not nav_event_clients:
+        return
+    msg = json.dumps(payload, ensure_ascii=False)
+    dead: List[WebSocket] = []
+    for ws in list(nav_event_clients):
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        nav_event_clients.discard(ws)
+
+
+def _camera_udp_clear_stale(now: Optional[float] = None) -> None:
+    now_ts = time.monotonic() if now is None else now
+    ttl = CAMERA_UDP_FRAME_TTL_MS / 1000.0
+    stale_sources = [
+        source_id
+        for source_id, assembly in camera_udp_assemblies.items()
+        if now_ts - assembly.created_at > ttl
+    ]
+    for source_id in stale_sources:
+        camera_udp_assemblies.pop(source_id, None)
+        camera_udp_stats.timeouts += 1
+        _camera_udp_note_event("timeout", now_ts)
+
+
+def _handle_camera_udp_datagram(data: bytes, addr: Tuple[str, int]) -> None:
+    now = time.monotonic()
+    camera_udp_stats.packets += 1
+    camera_udp_stats.last_addr = addr
+    _camera_udp_clear_stale(now)
+
+    if len(data) < CAMERA_UDP_HEADER_LEN:
+        camera_udp_stats.invalid_packets += 1
+        _camera_udp_note_event("invalid", now)
+        return
+
+    try:
+        (
+            magic,
+            version,
+            header_len,
+            flags,
+            source_id,
+            frame_id,
+            timestamp_ms,
+            frame_len,
+            frame_crc32,
+            chunk_index,
+            chunk_count,
+            payload_len,
+            _reserved,
+        ) = CAMERA_UDP_HEADER.unpack_from(data)
+    except Exception:
+        camera_udp_stats.invalid_packets += 1
+        _camera_udp_note_event("invalid", now)
+        return
+
+    if (
+        magic != CAMERA_UDP_MAGIC
+        or version != CAMERA_UDP_VERSION
+        or header_len != CAMERA_UDP_HEADER_LEN
+        or flags != 0
+        or chunk_count <= 0
+        or chunk_index >= chunk_count
+        or frame_len <= 0
+        or frame_len > CAMERA_UDP_MAX_FRAME_BYTES
+        or payload_len <= 0
+        or len(data) != header_len + payload_len
+    ):
+        if frame_len > CAMERA_UDP_MAX_FRAME_BYTES:
+            camera_udp_stats.oversize_frames += 1
+        else:
+            camera_udp_stats.invalid_packets += 1
+        _camera_udp_note_event("invalid", now)
+        return
+
+    payload = bytes(data[header_len:])
+    assembly = camera_udp_assemblies.get(source_id)
+
+    if assembly is not None:
+        if frame_id < assembly.frame_id:
+            camera_udp_stats.stale_chunks += 1
+            _camera_udp_note_event("stale", now)
+            return
+        if frame_id > assembly.frame_id:
+            if assembly.received_count < assembly.chunk_count:
+                camera_udp_stats.dropped_incomplete += 1
+                _camera_udp_note_event("drop_newer", now)
+            assembly = None
+
+    if assembly is None:
+        assembly = CameraUdpAssembly(
+            source_id=source_id,
+            frame_id=frame_id,
+            timestamp_ms=timestamp_ms,
+            frame_len=frame_len,
+            frame_crc32=frame_crc32,
+            chunk_count=chunk_count,
+            created_at=now,
+            addr=addr,
+            chunks=[None] * chunk_count,
+        )
+        camera_udp_assemblies[source_id] = assembly
+    elif (
+        assembly.frame_len != frame_len
+        or assembly.frame_crc32 != frame_crc32
+        or assembly.chunk_count != chunk_count
+    ):
+        camera_udp_stats.invalid_packets += 1
+        _camera_udp_note_event("invalid", now)
+        return
+
+    if assembly.chunks[chunk_index] is not None:
+        camera_udp_stats.duplicate_chunks += 1
+        return
+
+    assembly.chunks[chunk_index] = payload
+    assembly.received_count += 1
+    assembly.received_bytes += len(payload)
+
+    if assembly.received_count != assembly.chunk_count:
+        return
+
+    camera_udp_assemblies.pop(source_id, None)
+    jpeg_data = b"".join(chunk for chunk in assembly.chunks if chunk is not None)
+    if len(jpeg_data) != assembly.frame_len:
+        camera_udp_stats.invalid_packets += 1
+        _camera_udp_note_event("invalid", now)
+        return
+    if (zlib.crc32(jpeg_data) & 0xFFFFFFFF) != assembly.frame_crc32:
+        camera_udp_stats.crc_errors += 1
+        _camera_udp_note_event("crc", now)
+        return
+
+    camera_udp_stats.completed_frames += 1
+    camera_udp_stats.last_frame_id = frame_id
+    camera_udp_stats.last_source_id = source_id
+    camera_udp_stats.last_frame_len = len(jpeg_data)
+    camera_udp_stats.last_timestamp_ms = timestamp_ms
+    camera_udp_stats.last_completed_monotonic = now
+    camera_udp_stats.completed_window.append((now, len(jpeg_data)))
+    _camera_udp_note_event("complete", now)
+    _set_selected_camera_source("udp")
+
+    asyncio.create_task(_ingest_camera_jpeg(jpeg_data, CAMERA_UDP_SOURCE_NAME))
+    asyncio.create_task(_camera_udp_maybe_autotune())
+
+
+class CameraUdpProto(asyncio.DatagramProtocol):
+    def connection_made(self, transport):
+        print(f"[CAM UDP] listening on 0.0.0.0:{CAMERA_UDP_PORT}", flush=True)
+
+    def datagram_received(self, data, addr):
+        try:
+            _handle_camera_udp_datagram(data, addr)
+        except Exception as exc:
+            camera_udp_stats.invalid_packets += 1
+            print(f"[CAM UDP] datagram error from {addr}: {exc}", flush=True)
 
 # 【新增】模型加载函数
 def load_navigation_models():
@@ -860,6 +1199,7 @@ async def _handle_item_search_grabbed(target_label: str):
         stop_yolomedia()
     if orchestrator:
         orchestrator.stop_item_search(restore_nav=False)
+        await _apply_camera_profile_for_state(orchestrator.get_state(), reason="item_grabbed")
         print(f"[ITEM_SEARCH] 自动结束找物品，当前状态: {orchestrator.get_state()}", flush=True)
     current_item_search_label = ""
     await ui_broadcast_final(f"[找物品] 已拿到 {label}，已返回 CHAT 模式。")
@@ -926,6 +1266,7 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.start_crossing()
             print(f"[CROSS_STREET] 过马路模式已启动，状态: {orchestrator.get_state()}")
+            await _apply_camera_profile_for_state(orchestrator.get_state(), reason="crossing_start")
             # 播放启动语音并广播到UI
             await _play_voice_text_async("过马路模式已启动。")
             await ui_broadcast_final("[系统] 过马路模式已启动")
@@ -939,6 +1280,7 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.stop_navigation()
             print(f"[CROSS_STREET] 导航已停止，状态: {orchestrator.get_state()}")
+            await _apply_camera_profile_for_state(orchestrator.get_state(), reason="crossing_stop")
             # 播放停止语音并广播到UI
             await _play_voice_text_async("已停止导航。")
             await ui_broadcast_final("[系统] 过马路模式已停止")
@@ -955,6 +1297,7 @@ async def start_ai_with_text_custom(user_text: str):
             if orchestrator:
                 orchestrator.start_traffic_light_detection()
                 print(f"[TRAFFIC] 切换到红绿灯检测模式，状态: {orchestrator.get_state()}")
+                await _apply_camera_profile_for_state(orchestrator.get_state(), reason="traffic_start")
             
             # 【改进】使用主线程模式而不是独立线程，避免掉帧
             success = await asyncio.to_thread(trafficlight_detection.init_model)  # 只初始化模型，不启动线程
@@ -975,6 +1318,7 @@ async def start_ai_with_text_custom(user_text: str):
             if orchestrator:
                 orchestrator.stop_navigation()  # 回到CHAT模式
                 print(f"[TRAFFIC] 红绿灯检测停止，恢复到{orchestrator.get_state()}模式")
+                await _apply_camera_profile_for_state(orchestrator.get_state(), reason="traffic_stop")
             
             await ui_broadcast_final("[系统] 红绿灯检测已停止")
         except Exception as e:
@@ -992,6 +1336,7 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.start_blind_path_navigation()
             print(f"[NAVIGATION] 盲道导航已启动，状态: {orchestrator.get_state()}")
+            await _apply_camera_profile_for_state(orchestrator.get_state(), reason="blind_nav_start")
             await ui_broadcast_final("[系统] 盲道导航已启动")
         else:
             print("[NAVIGATION] 警告：导航统领器未初始化！")
@@ -1002,6 +1347,7 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.stop_navigation()
             print(f"[NAVIGATION] 导航已停止，状态: {orchestrator.get_state()}")
+            await _apply_camera_profile_for_state(orchestrator.get_state(), reason="blind_nav_stop")
             await ui_broadcast_final("[系统] 盲道导航已停止")
         else:
             await ui_broadcast_final("[系统] 导航系统未运行")
@@ -1011,6 +1357,7 @@ async def start_ai_with_text_custom(user_text: str):
     if any(k in user_text for k in nav_cmd_keywords):
         if orchestrator:
             orchestrator.on_voice_command(user_text)
+            await _apply_camera_profile_for_state(orchestrator.get_state(), reason="nav_voice_command")
             await ui_broadcast_final("[系统] 导航模式已更新")
         else:
             await ui_broadcast_final("[系统] 导航统领器未初始化")
@@ -1062,8 +1409,10 @@ async def start_ai_with_text_custom(user_text: str):
             
             # 根据恢复的状态给出反馈
             if current_state in ["BLINDPATH_NAV", "SEEKING_CROSSWALK", "WAIT_TRAFFIC_LIGHT", "CROSSING", "SEEKING_NEXT_BLINDPATH"]:
+                await _apply_camera_profile_for_state(current_state, reason="item_done_restore")
                 await ui_broadcast_final("[找物品] 已找到物品，继续导航。")
             else:
+                await _apply_camera_profile_for_state(current_state, reason="item_done")
                 await ui_broadcast_final("[找物品] 已找到物品。")
         else:
             await ui_broadcast_final("[找物品] 已找到物品。")
@@ -1081,6 +1430,7 @@ async def start_ai_with_text_custom(user_text: str):
         if current_state not in ["CHAT", "IDLE"]:
             omni_previous_nav_state = current_state
             orchestrator.force_state("CHAT")
+            await _apply_camera_profile_for_state("CHAT", reason="omni_start")
             print(f"[OMNI] 对话开始，从{current_state}切换到CHAT模式")
         else:
             omni_previous_nav_state = None
@@ -1155,6 +1505,7 @@ async def start_ai_with_text(user_text: str):
             # 恢复之前的导航状态
             if orchestrator and omni_previous_nav_state:
                 orchestrator.force_state(omni_previous_nav_state)
+                await _apply_camera_profile_for_state(omni_previous_nav_state, reason="omni_restore")
                 print(f"[OMNI] 对话结束，恢复到{omni_previous_nav_state}模式")
                 omni_previous_nav_state = None
             else:
@@ -1232,6 +1583,9 @@ def _get_runtime_status() -> Dict[str, Any]:
         ),
         "camera_latest_seq": camera_latest_seq,
         "camera_client": esp32_camera_client_id,
+        "camera_udp_completed": camera_udp_stats.completed_frames,
+        "camera_udp_fps": round(_camera_udp_complete_fps(), 2),
+        "camera_ctrl_clients": len(camera_ctrl_clients),
         "camera_last_frame_age_ms": (
             None
             if _camera_last_frame_age_sec() is None
@@ -1270,12 +1624,55 @@ def test_status():
     return _get_runtime_status()
 
 
+@app.get("/api/camera/stats")
+def camera_stats():
+    now = time.monotonic()
+    last_frame_age_ms = (
+        None
+        if camera_udp_stats.last_completed_monotonic <= 0.0
+        else int((now - camera_udp_stats.last_completed_monotonic) * 1000.0)
+    )
+    return {
+        "protocol": camera_source_key,
+        "udp_port": CAMERA_UDP_PORT,
+        "udp_frame_ttl_ms": CAMERA_UDP_FRAME_TTL_MS,
+        "udp_max_frame_bytes": CAMERA_UDP_MAX_FRAME_BYTES,
+        "packets": camera_udp_stats.packets,
+        "completed_frames": camera_udp_stats.completed_frames,
+        "complete_fps": round(_camera_udp_complete_fps(now), 2),
+        "avg_jpeg_bytes": _camera_udp_avg_jpeg_bytes(now),
+        "drop_ratio_10s": round(_camera_udp_drop_ratio(now), 4),
+        "stale_chunks": camera_udp_stats.stale_chunks,
+        "duplicate_chunks": camera_udp_stats.duplicate_chunks,
+        "invalid_packets": camera_udp_stats.invalid_packets,
+        "crc_errors": camera_udp_stats.crc_errors,
+        "timeouts": camera_udp_stats.timeouts,
+        "dropped_incomplete": camera_udp_stats.dropped_incomplete,
+        "oversize_frames": camera_udp_stats.oversize_frames,
+        "last_addr": list(camera_udp_stats.last_addr) if camera_udp_stats.last_addr else None,
+        "last_source_id": camera_udp_stats.last_source_id,
+        "last_frame_id": camera_udp_stats.last_frame_id,
+        "last_frame_len": camera_udp_stats.last_frame_len,
+        "last_timestamp_ms": camera_udp_stats.last_timestamp_ms,
+        "last_frame_age_ms": last_frame_age_ms,
+        "camera_latest_seq": camera_latest_seq,
+        "camera_source_name": camera_source_name,
+        "camera_source_active": camera_source_active,
+        "ctrl_ws_enabled": CAMERA_CTRL_WS_ENABLED,
+        "ctrl_clients": len(camera_ctrl_clients),
+        "ctrl_last_command": camera_ctrl_last_command,
+        "nav_event_clients": len(nav_event_clients),
+        "auto_level": camera_udp_auto_level,
+    }
+
+
 async def _switch_to_chat_mode():
     global current_item_search_label
     if yolomedia_running:
         stop_yolomedia()
     if orchestrator:
         orchestrator.force_state("CHAT")
+    await _apply_camera_profile_for_state("CHAT", reason="switch_chat")
     current_item_search_label = ""
     await ui_broadcast_final("[系统] 已切换到 CHAT 模式")
 
@@ -1286,6 +1683,7 @@ async def _stop_item_search_mode():
         stop_yolomedia()
     if orchestrator:
         orchestrator.stop_item_search(restore_nav=True)
+        await _apply_camera_profile_for_state(orchestrator.get_state(), reason="item_stop")
     current_item_search_label = ""
     await ui_broadcast_final("[系统] 已停止找物品模式")
 
@@ -2231,6 +2629,15 @@ async def camera_processor_loop():
                                 await ui_broadcast_final(f"[导航] {res.guidance_text}")
                             except Exception:
                                 pass
+                        await nav_event_broadcast({
+                            "type": "nav_result",
+                            "mode": nav_infer_mode,
+                            "guidance": str(getattr(res, "guidance_text", "") or ""),
+                            "latency_ms": nav_infer_last_ms,
+                            "camera_seq": camera_latest_seq,
+                            "frame_id": nav_infer_completed_count,
+                            "timestamp_ms": int(time.time() * 1000),
+                        })
 
                         out_img = res.annotated_image if res.annotated_image is not None else infer_raw
                         _update_processed_frame_cache(nav_frame_cache, nav_infer_mode, infer_raw, out_img)
@@ -2484,6 +2891,35 @@ async def ws_camera_esp(ws: WebSocket):
         print(f"[CAMERA] ESP32 websocket camera closed: {client_id}, reason={disconnect_reason}", flush=True)
 
 
+@app.websocket("/ws/camera_ctrl")
+async def ws_camera_ctrl(ws: WebSocket):
+    if not CAMERA_CTRL_WS_ENABLED:
+        await ws.accept()
+        await ws.close(code=1013)
+        return
+
+    await ws.accept()
+    camera_ctrl_clients.add(ws)
+    client = f"{ws.client.host}:{ws.client.port}" if ws.client else "unknown"
+    print(f"[CAM CTRL] device connected: {client}", flush=True)
+    try:
+        state = orchestrator.get_state() if orchestrator else "CHAT"
+        for cmd in _camera_profile_for_state(state):
+            await ws.send_text(cmd)
+        while True:
+            message = await ws.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            text = message.get("text")
+            if text:
+                print(f"[CAM CTRL] from device {client}: {text}", flush=True)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        camera_ctrl_clients.discard(ws)
+        print(f"[CAM CTRL] device disconnected: {client}", flush=True)
+
+
 # ---------- WebSocket：浏览器订阅相机帧 ----------
 @app.websocket("/ws/viewer")
 async def ws_viewer(ws: WebSocket):
@@ -2512,6 +2948,29 @@ async def ws_viewer(ws: WebSocket):
     finally:
         _drop_viewer(ws)
         print(f"[VIEWER] Removed. Total viewers: {len(camera_viewers)}", flush=True)
+
+
+@app.websocket("/ws/nav_events")
+async def ws_nav_events(ws: WebSocket):
+    await ws.accept()
+    nav_event_clients.add(ws)
+    try:
+        await ws.send_text(json.dumps({
+            "type": "nav_status",
+            "mode": orchestrator.get_state() if orchestrator else "CHAT",
+            "guidance": nav_infer_last_guidance,
+            "latency_ms": nav_infer_last_ms,
+            "camera_seq": camera_latest_seq,
+        }, ensure_ascii=False))
+        while True:
+            message = await ws.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        nav_event_clients.discard(ws)
+
 
 # ---------- WebSocket：浏览器订阅 IMU ----------
 @app.websocket("/ws")
@@ -2775,10 +3234,19 @@ async def on_startup_init_audio():
 async def on_startup():
     loop = asyncio.get_running_loop()
     await loop.create_datagram_endpoint(lambda: UDPProto(), local_addr=(UDP_IP, UDP_PORT))
+    global camera_udp_transport
+    camera_udp_transport, _ = await loop.create_datagram_endpoint(
+        lambda: CameraUdpProto(),
+        local_addr=("0.0.0.0", CAMERA_UDP_PORT),
+    )
     global model_preload_thread
     global backend_runtime_ready, backend_discovery_ready_at_monotonic
     _set_selected_camera_source(camera_source_key)
-    print("[CAMERA] startup: ESP32-S3 WebSocket mode, waiting for /ws/camera connection", flush=True)
+    print(
+        f"[CAMERA] startup: source={camera_source_key}, UDP latest-frame on {CAMERA_UDP_PORT}, "
+        "WebSocket /ws/camera kept as fallback",
+        flush=True,
+    )
     if model_preload_thread is None or not model_preload_thread.is_alive():
         model_preload_thread = threading.Thread(target=preload_runtime_models, daemon=True)
         model_preload_thread.start()
@@ -2793,6 +3261,7 @@ async def on_startup():
 async def on_shutdown():
     """应用关闭时的清理工作"""
     global camera_source_task, camera_record_task
+    global camera_udp_transport
     global backend_runtime_ready, backend_discovery_ready_at_monotonic
     backend_runtime_ready = False
     backend_discovery_ready_at_monotonic = 0.0
@@ -2818,6 +3287,9 @@ async def on_shutdown():
         except Exception as e:
             print(f"[SHUTDOWN] camera record stop error: {e}", flush=True)
     camera_record_task = None
+    if camera_udp_transport is not None:
+        camera_udp_transport.close()
+        camera_udp_transport = None
     _set_camera_source_runtime("", False)
     _reset_camera_ingest_state()
     

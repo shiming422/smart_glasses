@@ -30,6 +30,8 @@
   const $canvasWrap = document.getElementById('canvasWrap');
   const canvas     = document.getElementById('canvas');
   const ctx        = canvas.getContext('2d');
+  const navOverlayCanvas = document.getElementById('navOverlayCanvas');
+  const navCtx = navOverlayCanvas ? navOverlayCanvas.getContext('2d') : null;
   const DEFAULT_VIEWER_RAW_WIDTH = 720;
   const DEFAULT_VIEWER_RAW_HEIGHT = 1280;
 
@@ -234,6 +236,7 @@
   }
 
   function cameraSourceLabel(sourceKey){
+    if (sourceKey === 'udp') return 'ESP32 UDP Camera';
     if (sourceKey === 'esp32_ws') return 'ESP32 Camera';
     return 'HEVC Bridge';
   }
@@ -336,6 +339,10 @@
       canvas.width = viewerLayout.displayWidth;
       canvas.height = viewerLayout.displayHeight;
     }
+    if (navOverlayCanvas && (navOverlayCanvas.width !== viewerLayout.displayWidth || navOverlayCanvas.height !== viewerLayout.displayHeight)) {
+      navOverlayCanvas.width = viewerLayout.displayWidth;
+      navOverlayCanvas.height = viewerLayout.displayHeight;
+    }
   }
 
   function updateViewerDisplaySize(){
@@ -395,13 +402,16 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawNavOverlay(true);
   }
 
-  let wsCam, wsUI, frames = 0, fpsTimer = 0;
+  let wsCam, wsUI, wsNavEvents, frames = 0, fpsTimer = 0;
   let camReconnectTimer = 0;
   let camReconnectAttempts = 0;
+  let navReconnectTimer = 0;
   let latestFrameBuf = null, renderInFlight = false, fallbackImg = null;
   let lastCamFrameAt = 0;
+  let lastNavEvent = null;
   let cameraRuntimeStatus = {
     sourceKey: 'hevc_bridge',
     active: false,
@@ -496,6 +506,40 @@
 
   window.setInterval(refreshCameraBadge, 500);
 
+  function drawNavOverlay(forceClear = false){
+    if (!navCtx || !navOverlayCanvas) return;
+    syncViewerCanvasSize();
+    const w = navOverlayCanvas.width;
+    const h = navOverlayCanvas.height;
+    navCtx.setTransform(1, 0, 0, 1, 0, 0);
+    navCtx.clearRect(0, 0, w, h);
+    if (forceClear || !lastNavEvent) return;
+
+    const age = performance.now() - lastNavEvent.receivedAt;
+    if (age > 5000) return;
+
+    const guidance = (lastNavEvent.guidance || '').trim();
+    const mode = lastNavEvent.mode || 'NAV';
+    const latency = Number.isFinite(lastNavEvent.latency_ms) ? `${lastNavEvent.latency_ms}ms` : '--';
+    const text = guidance || '导航运行中';
+    const label = `${mode}  ${latency}`;
+    const pad = Math.max(12, Math.round(w * 0.018));
+    const boxH = Math.max(72, Math.round(h * 0.09));
+    const boxY = h - boxH - pad;
+
+    navCtx.fillStyle = 'rgba(0, 0, 0, 0.58)';
+    navCtx.fillRect(pad, boxY, w - pad * 2, boxH);
+    navCtx.strokeStyle = 'rgba(126, 231, 135, 0.85)';
+    navCtx.lineWidth = 2;
+    navCtx.strokeRect(pad, boxY, w - pad * 2, boxH);
+    navCtx.fillStyle = '#7ee787';
+    navCtx.font = `${Math.max(16, Math.round(h * 0.018))}px system-ui, "Microsoft YaHei", sans-serif`;
+    navCtx.fillText(label, pad * 2, boxY + Math.round(boxH * 0.34));
+    navCtx.fillStyle = '#ffffff';
+    navCtx.font = `700 ${Math.max(24, Math.round(h * 0.032))}px system-ui, "Microsoft YaHei", sans-serif`;
+    navCtx.fillText(text.slice(0, 28), pad * 2, boxY + Math.round(boxH * 0.76));
+  }
+
   function drawRotatedFrame(src, srcW, srcH){
     setViewerLayout(srcW, srcH);
     const cw = viewerLayout.displayWidth;
@@ -508,6 +552,7 @@
     ctx.rotate(Math.PI / 2);
     ctx.drawImage(src, 0, 0, srcW, srcH);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    drawNavOverlay();
     camDebug.rawSize = `${srcW}x${srcH}`;
     camDebug.displaySize = `${viewerLayout.cssWidth}x${viewerLayout.cssHeight} (native ${viewerLayout.displayWidth}x${viewerLayout.displayHeight})`;
   }
@@ -634,6 +679,43 @@
     };
   }
 
+  function connectNavEvents(){
+    if (navReconnectTimer) {
+      window.clearTimeout(navReconnectTimer);
+      navReconnectTimer = 0;
+    }
+    const prev = wsNavEvents;
+    wsNavEvents = null;
+    try{
+      if (prev) {
+        prev.onopen = null;
+        prev.onclose = null;
+        prev.onerror = null;
+        prev.onmessage = null;
+        prev.close();
+      }
+    }catch(e){}
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${proto}://${location.host}/ws/nav_events`);
+    wsNavEvents = socket;
+    socket.onmessage = (ev) => {
+      if (wsNavEvents !== socket) return;
+      try{
+        const data = JSON.parse(ev.data);
+        lastNavEvent = { ...data, receivedAt: performance.now() };
+        drawNavOverlay();
+      }catch(e){}
+    };
+    socket.onclose = () => {
+      if (wsNavEvents !== socket) return;
+      navReconnectTimer = window.setTimeout(connectNavEvents, 1200);
+    };
+    socket.onerror = () => {
+      if (wsNavEvents !== socket) return;
+      try { socket.close(); } catch(e){}
+    };
+  }
+
   function connectASR(){
     const prev = wsUI;
     wsUI = null;
@@ -713,7 +795,7 @@
     messages.forEach(msg => msg.remove());
     lastTimestamp = 0; // 重置时间戳计数
   };
-  $btnRe.onclick    = ()=> { connectCamera(); connectASR(); };
+  $btnRe.onclick    = ()=> { connectCamera(); connectASR(); connectNavEvents(); };
   if ($btnSourceRv1106) $btnSourceRv1106.onclick = ()=> { switchCameraSource('hevc_bridge'); };
   if ($btnModeChat) $btnModeChat.onclick = ()=> { sendTestControl('chat'); };
   if ($btnBlindNav) $btnBlindNav.onclick = ()=> { sendTestControl('blind_nav'); };
@@ -755,6 +837,7 @@
 
   connectCamera();
   connectASR();
+  connectNavEvents();
   refreshTestStatus();
   setInterval(refreshTestStatus, 2000);
 })();
