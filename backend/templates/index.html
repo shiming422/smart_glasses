@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>HEVC Bridge 相机 + 实时语音识别 + IMU 可视化</title>
+<style>
+  :root{
+    --bg:#0b0f14; --card:#121821; --text:#e6edf3; --muted:#9fb0c3;
+    --ok:#7ee787; --err:#ff8080; --line:#1f2937; --panel:rgba(18,24,33,.65);
+    --viewer-native-width:1280px; --viewer-native-height:720px;
+    --viewer-css-width:1280px; --viewer-css-height:720px;
+    --chat-width:clamp(420px, 34vw, 700px);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    background:linear-gradient(180deg,#0b0f14,#0b0f14 60%,#0e1621);
+    color:var(--text);
+    font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans","PingFang SC","Hiragino Sans GB","Microsoft YaHei",Arial;
+    min-height:100vh;
+    overflow:auto;
+  }
+
+  .app{
+    display:grid;grid-template-columns:minmax(0,1fr) var(--chat-width);gap:16px;
+    align-items:stretch;min-height:100vh;padding:16px;width:100%;
+  }
+  .stage{
+    position:relative;border:1px solid var(--line);border-radius:14px;
+    min-width:0;height:calc(100vh - 32px);
+    background:#05080c;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;
+  }
+  .canvas-wrap{
+    position:absolute;left:50%;top:50%;
+    width:var(--viewer-css-width);height:var(--viewer-css-height);
+    transform:translate(-50%,-50%);
+    display:block;background:#000;z-index:10;
+  }
+  #canvas{
+    position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;z-index:10;
+  }
+
+  .imu-float{
+    position:absolute;left:12px;top:12px;z-index:35;
+    width:min(620px, calc(100% - 24px));max-width:calc(100% - 24px);
+    min-width:360px;min-height:220px;max-height:calc(100% - 24px);
+    display:flex;flex-direction:column;
+    border:2px dashed rgba(255,255,255,.35);border-radius:12px;
+    background:var(--panel);backdrop-filter:blur(8px) saturate(130%);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);padding:8px;
+    resize:both;overflow:hidden;
+  }
+  .imu-drag-handle{
+    display:flex;align-items:center;justify-content:space-between;
+    margin:-8px -8px 8px -8px;padding:7px 10px;
+    border-radius:10px 10px 8px 8px;border-bottom:1px solid rgba(255,255,255,.15);
+    background:rgba(0,0,0,.22);color:var(--muted);font-size:12px;font-weight:600;
+    letter-spacing:.2px;cursor:grab;user-select:none;touch-action:none;
+  }
+  .imu-float.dragging .imu-drag-handle{cursor:grabbing}
+  .imu-row{display:grid;grid-template-columns:1.45fr .95fr;gap:10px;align-items:stretch;flex:1;min-height:0}
+  #imu_view{position:relative;min-height:160px;background:#0a1017;border-radius:10px}
+  #imu_hud{
+    border-radius:10px;background:rgba(133,149,173,0.8);border:none;padding:8px;
+    overflow-y:auto;max-height:none;min-height:0;
+  }
+  #imu_hud::-webkit-scrollbar{width:8px}
+  #imu_hud::-webkit-scrollbar-thumb{background-color:#2a6df4;border-radius:4px}
+  #imu_hud::-webkit-scrollbar-track{background-color:#111a2e;border-radius:4px}
+  #imu_top_status{position:absolute;top:44px;right:10px;z-index:2}
+  #imu_top_status .badge{background:rgba(0,0,0,.35);border-color:#2d3b50}
+
+  .badge-tag{
+    position:absolute;left:12px;top:calc(12px + 220px + 24px);z-index:20;
+    background:linear-gradient(120deg,rgba(47,134,255,.9),rgba(26,88,255,.9));
+    color:#fff;padding:6px 10px;font-weight:700;font-size:12px;border-radius:999px;
+    box-shadow:0 6px 16px rgba(47,134,255,.35);
+  }
+  .command{
+    position:absolute;left:50%;bottom:46px;transform:translateX(-50%);z-index:25;
+    display:flex;gap:10px;align-items:center;padding:12px 18px;border-radius:999px;
+    background:rgba(18,24,33,.75);border:1px solid rgba(255,255,255,.14);
+    backdrop-filter:blur(8px) saturate(140%);box-shadow:0 12px 28px rgba(0,0,0,.6);
+  }
+  .dot{width:9px;height:9px;border-radius:50%;background:#2f86ff;box-shadow:0 0 16px #2f86ff}
+
+  .chat{
+    display:flex;flex-direction:column;border:1px solid var(--line);border-radius:14px;
+    width:100%;min-width:0;height:calc(100vh - 32px);
+    background:var(--card);box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;
+  }
+  .chat-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .badges{display:flex;gap:10px;flex-wrap:wrap}
+  .badge{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid #2d3b50;color:var(--muted)}
+  .ok{color:var(--ok);border-color:var(--ok)}
+  .err{color:var(--err);border-color:var(--err)}
+  .chat-list{
+    flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0;
+  }
+  .live{padding:12px;border:1px dashed #2d3b50;border-radius:12px;background:#0c121a}
+  .live h2{margin:0 0 8px 0;font-size:14px;color:var(--muted);font-weight:600}
+  .partial{font-size:20px;min-height:2.2em;letter-spacing:.2px}
+  .finals{
+    padding:12px;border:1px solid #1f2937;border-radius:12px;background:#0c121a;
+    display:flex;flex-direction:column;flex:1;min-height:0;
+  }
+  .finals h2{margin:0 0 8px 0;font-size:14px;color:var(--muted);font-weight:600}
+  .finals ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+  .bubble{max-width:82%;padding:10px 12px;border-radius:14px;border:1px solid #1f2937}
+  .from-bot{align-self:flex-start;background:#0d1729}
+  .from-me{align-self:flex-end;background:#12263a}
+
+  .controls{display:flex;gap:8px}
+  button{
+    background:#1f6feb;border:1px solid #1f6feb;color:#fff;border-radius:10px;
+    padding:8px 12px;font-weight:600;cursor:pointer;
+  }
+  .ghost{background:transparent;border-color:#304057;color:#9fb0c3}
+  .test-panel{
+    margin:12px;padding:12px;border:1px solid #1f2937;border-radius:12px;
+    background:#0c121a;display:flex;flex-direction:column;gap:10px;
+  }
+  .test-panel h2{margin:0;font-size:14px;color:var(--muted);font-weight:600}
+  .test-status,.test-actions{display:flex;gap:8px;flex-wrap:wrap}
+  .test-actions button{padding:7px 10px}
+  .test-input-row{display:flex;gap:8px;align-items:center}
+  .test-input-row input{
+    flex:1;min-width:0;background:#111827;color:var(--text);border:1px solid #304057;
+    border-radius:10px;padding:8px 10px;
+  }
+  .test-hint{font-size:12px;color:var(--muted)}
+  .hidden-controls{display:none}
+</style>
+</head>
+<body>
+<div class="app" id="appLayout">
+  <section class="stage" id="stage">
+    <div class="canvas-wrap" id="canvasWrap"><canvas id="canvas"></canvas></div>
+
+    <div class="imu-float">
+      <div class="imu-drag-handle" id="imu_drag_handle">
+        <span>IMU 面板</span>
+        <span>拖动</span>
+      </div>
+      <div class="imu-row">
+        <div id="imu_view"></div>
+        <div id="imu_hud"><!-- JS 会把“IMU 实时数据面板”插到这里 --></div>
+      </div>
+      <div id="imu_top_status" style="display:none;">
+        <span class="badge">UDP: <code>12345</code></span>
+        <span class="badge">Browser WS: <code>/ws</code></span>
+        <span class="badge" id="imu_ws_state">connecting...</span>
+      </div>
+    </div>
+  </section>
+
+  <aside class="chat">
+    <div class="chat-head">
+      <div class="badges">
+        <span id="camStatus" class="badge">Camera: connecting...</span>
+        <span id="asrStatus" class="badge">ASR: connecting...</span>
+        <span id="fps" class="badge">FPS: --</span>
+      </div>
+      <div class="controls">
+        <button class="ghost" id="btnClear">清空 Final</button>
+        <button id="btnReconnect">重连</button>
+      </div>
+    </div>
+
+    <div class="test-panel">
+      <h2>临时测试面板</h2>
+      <div class="test-status">
+        <span id="modeBadge" class="badge">Mode: --</span>
+        <span id="yoloBadge" class="badge">YOLO: --</span>
+        <span id="omniBadge" class="badge">Omni: --</span>
+        <span id="sourceBadge" class="badge">Source: --</span>
+      </div>
+      <div class="test-actions">
+        <button id="btnSourceRv1106" class="ghost">HEVC Bridge</button>
+      </div>
+      <div class="test-actions">
+        <button id="btnModeChat" class="ghost">CHAT</button>
+        <button id="btnBlindNav" class="ghost">盲道导航</button>
+        <button id="btnCrossing" class="ghost">过马路</button>
+        <button id="btnTrafficLight" class="ghost">红绿灯</button>
+        <button id="btnStopNav" class="ghost">停止导航</button>
+        <button id="btnStopItem" class="ghost">停止找物品</button>
+        <button id="btnResetAudio" class="ghost">系统重置</button>
+      </div>
+      <div class="test-input-row">
+        <input id="itemSearchInput" type="text" placeholder="输入要寻找的物品，例如：红牛" />
+        <button id="btnItemSearch">开始找物品</button>
+      </div>
+      <div class="test-input-row">
+        <input id="manualCommandInput" type="text" placeholder="输入任意测试文本或自然语言命令" />
+        <button id="btnSendCommand">发送命令</button>
+      </div>
+      <div class="test-hint">这里是临时测试入口：按钮直接切模式，文本命令走现有语义解析。</div>
+    </div>
+
+    <div class="chat-list">
+      <div class="live">
+        <h2>流式识别（Partial）</h2>
+        <div class="partial" id="partial">（等待音频…）</div>
+      </div>
+      <div class="finals">
+        <h2>最终文本（Final）</h2>
+        <ul id="finalList"></ul>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<div class="hidden-controls">
+  <button id="btn_zero"></button><button id="btn_reset"></button><button id="btn_bias_now"></button>
+  <input id="auto_rezero" type="checkbox" checked /><input id="auto_bias" type="checkbox" checked />
+  <input id="use_proj" type="checkbox" checked /><input id="freeze_still" type="checkbox" checked />
+  <select id="medn"><option>3</option><option selected>5</option><option>7</option></select>
+  <select id="ang_ema"><option value="0">0</option><option value="0.15" selected>0.15</option><option value="0.30">0.30</option><option value="0.5">0.5</option></select>
+  <select id="grav_beta"><option value="0.95">0.95</option><option value="0.97">0.97</option><option value="0.98" selected>0.98</option><option value="0.99">0.99</option></select>
+  <select id="yaw_db"><option value="0.05">0.05</option><option value="0.08" selected>0.08</option><option value="0.15">0.15</option><option value="0.30">0.30</option></select>
+  <select id="still_w"><option value="0.4" selected>0.4</option><option value="0.6">0.6</option><option value="1.0">1.0</option></select>
+  <select id="yaw_leak"><option value="0">0</option><option value="0.1">0.1</option><option value="0.2" selected>0.2</option><option value="0.5">0.5</option></select>
+  <input id="roll_sl" type="range"><span id="roll_val"></span>
+  <input id="pitch_sl" type="range"><span id="pitch_val"></span>
+  <input id="yaw_sl" type="range"><span id="yaw_val"></span>
+  <input id="gx_sl" type="range"><span id="gx_val"></span>
+  <input id="gy_sl" type="range"><span id="gy_val"></span>
+  <input id="gz_sl" type="range"><span id="gz_val"></span>
+  <input id="ax_sl" type="range"><span id="ax_val"></span>
+  <input id="ay_sl" type="range"><span id="ay_val"></span>
+  <input id="az_sl" type="range"><span id="az_val"></span>
+</div>
+
+<script type="importmap">{
+  "imports": { "three": "https://unpkg.com/three@0.155.0/build/three.module.js" }
+}</script>
+
+<script type="module" src="/static/main.js?v=20260504-nav-singlepath-encoding"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+
+# Runtime outputs
+recordings/*
+!recordings/.gitkeep
+runtime_logs/
+*.log
+output/
+.playwright-cli/
+run_logs/
+.backend.pid
+.rv1106_last_hevc_url
+*.hevc
+__probe_*.py
+*.bak_codex
+*.recovered.py
+*.cpython-*.py
+/compile.zip
+
+# Firmware build outputs
+compile/.pio/
+compile/wifi_profile.h
+
+# Large model artifacts
+model/
+mobileclip_blt.ts
+
+# Local secrets
+.env
+.env.*
+!.env.example

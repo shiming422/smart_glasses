@@ -1,0 +1,99 @@
+================================================================
+  AIGlass 后端操作手册（统一工作区 / 双 ESP32 分工）
+================================================================
+
+项目目录:
+  E:\Desktop\smart_glasses_esp32_workspace\backend
+
+当前分工:
+  ESP32A  视频 + 麦克风上行:
+    ws://<backend>:8765/ws/camera    JPEG 帧
+    ws://<backend>:8765/ws_audio     PCM16 mono 16 kHz 音频
+
+  ESP32B  扬声器 + IMU:
+    http://<backend>:8765/stream.wav 音频下行
+    udp://<backend>:12345            IMU JSON
+    udp://<backend>:54321            AIGLASS_DISCOVER 后端发现
+
+  浏览器前端:
+    http://127.0.0.1:8765/
+
+================================================================
+  一、启动后端（Docker）
+================================================================
+
+```powershell
+Set-Location -LiteralPath "E:\Desktop\smart_glasses_esp32_workspace\backend"
+docker compose up -d
+```
+
+如果修改了 Dockerfile 或 requirements.txt:
+
+```powershell
+docker compose up -d --build
+```
+
+================================================================
+  二、查看状态和日志
+================================================================
+
+```powershell
+docker ps --filter "name=^/aiglass$"
+docker logs --tail 120 aiglass
+Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8765/api/health"
+```
+
+正常健康检查响应:
+
+```text
+OK
+```
+
+================================================================
+  三、停止后端
+================================================================
+
+```powershell
+Set-Location -LiteralPath "E:\Desktop\smart_glasses_esp32_workspace\backend"
+docker compose down
+```
+
+================================================================
+  四、必须和硬件保持一致的配置
+================================================================
+
+本地 `backend\.env` 不提交 Git，但硬件测试前必须确认:
+
+```text
+AIGLASS_PORT=8765
+AIGLASS_UDP_PORT=12345
+AIGLASS_DISCOVERY_PORT=54321
+AIGLASS_AUDIO_WS_ENABLED=1
+AIGLASS_CAMERA_SOURCE=ws
+```
+
+如果后端运行在 Docker bridge 网络中，`AIGLASS_DISCOVERY_HOST` 应填写电脑在 ESP32 同一 Wi-Fi/LAN 下可访问的 IP，避免容器把 `172.x` 地址广播给板子。
+
+================================================================
+  五、接口清单
+================================================================
+
+  GET  /api/health          健康检查
+  GET  /                    前端页面
+  WS   /ws/camera           ESP32A JPEG 视频上行
+  WS   /ws_audio            ESP32A 麦克风 PCM 音频上行
+  WS   /ws/viewer           浏览器画面订阅
+  GET  /stream.wav          ESP32B 音频播放下行
+  UDP  12345                ESP32B IMU JSON
+  UDP  54321                ESP32 发现后端，request=AIGLASS_DISCOVER
+
+================================================================
+  六、协作规则
+================================================================
+
+后端、ESP32A、ESP32B 的端口、协议、职责或启动方式发生变化时，必须同步更新:
+
+  E:\Desktop\smart_glasses_esp32_workspace\WORK_CONTEXT.md
+
+同一轮改动完成后提交 Git，避免两个 Codex 聊天窗口互相猜状态。
+================================================================

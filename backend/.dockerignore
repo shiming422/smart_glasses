@@ -1,0 +1,18 @@
+.git
+.vscode
+.workbuddy
+__pycache__
+*.py[cod]
+*.log
+runtime_logs/*
+recordings/*
+.env
+.env.*
+compile/wifi_profile.h
+.codex
+$null
+nul
+mobileclip_blt.ts
+
+# Large runtime assets are mounted by docker-compose.
+model/*

@@ -1,0 +1,53 @@
+services:
+  aiglass:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aiglass-backend:local
+    container_name: aiglass
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AIGLASS_HOST: 0.0.0.0
+      AIGLASS_PORT: ${AIGLASS_PORT:-8765}
+      AIGLASS_UDP_PORT: ${AIGLASS_UDP_PORT:-12345}
+      AIGLASS_DISCOVERY_PORT: ${AIGLASS_DISCOVERY_PORT:-54321}
+      AIGLASS_DISCOVERY_HOST: ${AIGLASS_DISCOVERY_HOST:-}
+      BLIND_PATH_MODEL: ${BLIND_PATH_MODEL:-model/yolo-seg.pt}
+      OBSTACLE_MODEL: ${OBSTACLE_MODEL:-model/yoloe-11l-seg.pt}
+      YOLOE_MODEL_PATH: ${YOLOE_MODEL_PATH:-model/yoloe-11l-seg.pt}
+      YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-model/shoppingbest5.pt}
+      HAND_TASK_PATH: ${HAND_TASK_PATH:-model/hand_landmarker.task}
+      TRAFFICLIGHT_MODEL: ${TRAFFICLIGHT_MODEL:-model/trafficlight.pt}
+      ENABLE_TTS: ${ENABLE_TTS:-true}
+      TTS_INTERVAL_SEC: ${TTS_INTERVAL_SEC:-1.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SDL_AUDIODRIVER: ${SDL_AUDIODRIVER:-dummy}
+      YOLO_CONFIG_DIR: ${YOLO_CONFIG_DIR:-/tmp/Ultralytics}
+    ports:
+      - "${AIGLASS_HOST_PORT:-8765}:${AIGLASS_PORT:-8765}"
+      - "${AIGLASS_UDP_PORT:-12345}:${AIGLASS_UDP_PORT:-12345}/udp"
+      - "${AIGLASS_DISCOVERY_PORT:-54321}:${AIGLASS_DISCOVERY_PORT:-54321}/udp"
+    volumes:
+      - ./model:/app/model:ro
+      - ./recordings:/app/recordings
+      - ./runtime_logs:/app/runtime_logs
+      - ./music:/app/music:ro
+      - ./voice:/app/voice:ro
+      - ./static:/app/static:ro
+      - ./templates:/app/templates:ro
+      - ./mobileclip_blt.ts:/app/mobileclip_blt.ts:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f \"http://localhost:$${AIGLASS_PORT:-8765}/api/health\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
