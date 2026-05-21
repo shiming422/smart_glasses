@@ -13,7 +13,7 @@
 
 - ESP32A 摄像头不再走 WebSocket 大 JPEG 包，而是走 UDP `22345` 分片 JPEG 最新帧流。
 - 默认后端视频入口是 C++ gateway：Windows 主机 C++ 进程监听 UDP `22345`，Docker 内 Python 通过映射 TCP `127.0.0.1:22346` 接收完整最新 JPEG。
-- 浏览器预览走 raw JPEG，导航文字/方向通过 `/ws/nav_events` 叠加到前端透明 canvas。
+- 浏览器导航预览默认使用后端盲道模块原生 OpenCV 标注 JPEG；`/ws/nav_events` 继续保留给导航状态/文字事件。
 - ESP32A 控制走 `/ws/camera_ctrl`，后端可按导航/对话模式下发 FPS、质量、分辨率。
 - CHAT 当前使用 `QUALITY=40 / 10 FPS`，导航档使用 `VGA / QUALITY=30 / 10 FPS`；如果临时降档，稳定后会自动恢复当前模式档位。
 - ESP32B 当前临时关闭扬声器和 `/stream.wav` 拉流，只保留 IMU 上传；恢复时把 `ENABLE_SPEAKER_PLAYBACK` 改回 `1` 后重刷 B 板。

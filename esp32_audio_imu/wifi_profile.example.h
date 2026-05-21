@@ -9,3 +9,6 @@
 #define WIFI_GATEWAY_VALUE ""
 #define WIFI_SUBNET_VALUE ""
 #define WIFI_DNS_VALUE ""
+
+// Optional cloud/demo backend fallback. Leave empty for LAN-only auto-discovery.
+#define BACKEND_FALLBACK_HOST_VALUE ""

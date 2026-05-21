@@ -1,6 +1,7 @@
 # audio_stream.py
 # -*- coding: utf-8 -*-
 import asyncio
+import os
 from dataclasses import dataclass
 from typing import Optional, Set, List, Tuple, Any, Dict
 from fastapi import Request
@@ -11,6 +12,24 @@ STREAM_SR = 8000  # 改为8kHz，ESP32支持
 STREAM_CH = 1
 STREAM_SW = 2
 BYTES_PER_20MS_16K = STREAM_SR * STREAM_SW * 20 // 1000  # 320B (8kHz)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or str(default))
+    except Exception:
+        return default
+
+
+STREAM_IDLE_SILENCE_ENABLED = (
+    os.getenv("AIGLASS_STREAM_IDLE_SILENCE", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+STREAM_IDLE_SILENCE_MS = max(20, _env_int("AIGLASS_STREAM_IDLE_SILENCE_MS", 20))
+STREAM_IDLE_SILENCE_CHUNK = b"\x00" * max(
+    2,
+    (STREAM_SR * STREAM_CH * STREAM_SW * STREAM_IDLE_SILENCE_MS) // 1000,
+)
 
 # ===== AI 播放任务总闸 =====
 current_ai_task: Optional[asyncio.Task] = None
@@ -155,8 +174,15 @@ def register_stream_route(app):
                     if abort_event.is_set():
                         break
                     try:
-                        chunk = await asyncio.wait_for(q.get(), timeout=0.5)
+                        chunk = await asyncio.wait_for(
+                            q.get(),
+                            timeout=(STREAM_IDLE_SILENCE_MS / 1000.0)
+                            if STREAM_IDLE_SILENCE_ENABLED
+                            else 0.5,
+                        )
                     except asyncio.TimeoutError:
+                        if STREAM_IDLE_SILENCE_ENABLED:
+                            yield STREAM_IDLE_SILENCE_CHUNK
                         continue
                     if abort_event.is_set():
                         break

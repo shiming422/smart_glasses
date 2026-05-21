@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     ffmpeg \
+    fonts-wqy-microhei \
     git \
     libasound2 \
     libglib2.0-0 \

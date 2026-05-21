@@ -2657,7 +2657,11 @@ class BlindPathNavigator:
                     from PIL import Image as PILImage, ImageDraw, ImageFont
                     # 尝试加载中文字体
                     font = None
-                    for font_path in ["C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"]:
+                    for font_path in [
+                        "C:/Windows/Fonts/msyh.ttc",
+                        "C:/Windows/Fonts/simhei.ttf",
+                        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                    ]:
                         if os.path.exists(font_path):
                             try:
                                 font = ImageFont.truetype(font_path, font_px)
@@ -2761,6 +2765,7 @@ class BlindPathNavigator:
                 "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
                 "C:/Windows/Fonts/simhei.ttf",    # 黑体
                 "C:/Windows/Fonts/simsun.ttc",    # 宋体
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # Linux
                 "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",  # Linux
                 "/System/Library/Fonts/PingFang.ttc",  # macOS
             ]
@@ -3168,6 +3173,7 @@ class BlindPathNavigator:
                 "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
                 "C:/Windows/Fonts/msyh.ttf",      # 微软雅黑旧版
                 "C:/Windows/Fonts/simhei.ttf",    # 黑体
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # Linux
             ]
             
             for font_path in font_paths:

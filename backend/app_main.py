@@ -124,6 +124,8 @@ PATH_FRAME_DIV = max(1, _env_int("AIGLASS_PATH_FRAME_DIV", 2))
 TRAFFIC_FRAME_DIV = max(1, _env_int("AIGLASS_TRAFFIC_FRAME_DIV", 2))
 NAV_VIEWER_FRAME_DIV = max(1, _env_int("AIGLASS_NAV_VIEWER_FRAME_DIV", 4))
 NAV_RAW_BETWEEN_OVERLAYS = _env_flag("AIGLASS_NAV_RAW_BETWEEN_OVERLAYS", True)
+NAV_INFER_MIN_INTERVAL_MS = max(0, _env_int("AIGLASS_NAV_INFER_MIN_INTERVAL_MS", 750))
+NAV_INFER_MIN_INTERVAL_SEC = NAV_INFER_MIN_INTERVAL_MS / 1000.0
 CAMERA_UDP_PORT = max(1, min(65535, _env_int("AIGLASS_CAMERA_UDP_PORT", 22345)))
 CAMERA_UDP_FRAME_TTL_MS = max(50, _env_int("AIGLASS_CAMERA_UDP_FRAME_TTL_MS", 250))
 CAMERA_UDP_MAX_FRAME_BYTES = max(65536, _env_int("AIGLASS_CAMERA_UDP_MAX_FRAME_BYTES", 512 * 1024))
@@ -158,7 +160,7 @@ CAMERA_AUTOTUNE_WARMUP_SEC = max(0.0, _env_float("AIGLASS_CAMERA_AUTOTUNE_WARMUP
 CAMERA_SOURCE_DEFAULT = os.getenv("AIGLASS_CAMERA_SOURCE", "cpp_gateway").strip().lower()
 RECORD_FRAME_FPS = max(1, _env_int("AIGLASS_RECORD_FRAME_FPS", 10))
 AUTO_RECORD_ENABLED = _env_flag("AIGLASS_AUTO_RECORD", False)
-NAV_DIRECT_VIEWER_ENABLED = _env_flag("AIGLASS_NAV_DIRECT_VIEWER", True)
+NAV_DIRECT_VIEWER_ENABLED = _env_flag("AIGLASS_NAV_DIRECT_VIEWER", False)
 CAMERA_WS_HANDOVER_STALE_SEC = max(
     1.0, _env_float("AIGLASS_CAMERA_WS_HANDOVER_STALE_SEC", 3.0)
 )
@@ -437,6 +439,13 @@ nav_infer_last_state: str = ""
 nav_infer_last_guidance: str = ""
 nav_infer_last_error: str = ""
 nav_infer_last_completed_monotonic: float = 0.0
+nav_infer_last_started_monotonic: float = 0.0
+nav_infer_last_started_seq: int = 0
+nav_infer_last_completed_seq: int = 0
+nav_infer_last_decode_ms: int = 0
+nav_infer_last_source_age_ms: Optional[int] = None
+nav_infer_skipped_busy_count: int = 0
+nav_infer_skipped_throttle_count: int = 0
 
 CAMERA_UDP_MAGIC = 0x43474941
 CAMERA_UDP_VERSION = 1
@@ -673,6 +682,106 @@ async def nav_event_broadcast(payload: Dict[str, Any]) -> None:
             dead.append(ws)
     for ws in dead:
         nav_event_clients.discard(ws)
+
+
+def _json_safe_scalar(value: Any, max_text_len: int = 120) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        if isinstance(value, float) and not np.isfinite(value):
+            return None
+        return value
+    if isinstance(value, np.generic):
+        return _json_safe_scalar(value.item(), max_text_len=max_text_len)
+    if isinstance(value, str):
+        return value[:max_text_len]
+    return str(value)[:max_text_len]
+
+
+def _sanitize_nav_point(value: Any) -> Optional[List[int]]:
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return None
+    try:
+        x = float(value[0])
+        y = float(value[1])
+    except Exception:
+        return None
+    if not np.isfinite(x) or not np.isfinite(y):
+        return None
+    return [int(round(x)), int(round(y))]
+
+
+def _sanitize_nav_points(value: Any, max_points: int = 140) -> List[List[int]]:
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if not isinstance(value, (list, tuple)) or not value:
+        return []
+    step = max(1, int(np.ceil(len(value) / float(max_points))))
+    points: List[List[int]] = []
+    for item in value[::step]:
+        point = _sanitize_nav_point(item)
+        if point is not None:
+            points.append(point)
+    return points
+
+
+def _sanitize_nav_data_panel(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    clean: Dict[str, Any] = {}
+    for idx, (key, val) in enumerate(value.items()):
+        if idx >= 16:
+            break
+        clean[str(key)[:40]] = _json_safe_scalar(val, max_text_len=80)
+    return clean
+
+
+def _sanitize_nav_visualizations(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    clean_items: List[Dict[str, Any]] = []
+    point_keys = {"center", "start", "end", "position", "pos", "top_left", "bottom_right"}
+    scalar_keys = {
+        "type", "color", "bg_color", "text", "level", "effect",
+        "thickness", "width", "radius", "font_scale", "tip_length",
+        "pulse_speed", "start_angle", "end_angle", "filled", "flash",
+    }
+    for item in value[:40]:
+        if not isinstance(item, dict):
+            continue
+        elem_type = str(item.get("type") or "")[:40]
+        if not elem_type:
+            continue
+        clean: Dict[str, Any] = {"type": elem_type}
+        if "points" in item:
+            points = _sanitize_nav_points(item.get("points"))
+            if points:
+                clean["points"] = points
+        for key in point_keys:
+            if key in item:
+                point = _sanitize_nav_point(item.get(key))
+                if point is not None:
+                    clean[key] = point
+        if "data" in item:
+            data = _sanitize_nav_data_panel(item.get("data"))
+            if data:
+                clean["data"] = data
+        for key in scalar_keys:
+            if key in item and key not in clean:
+                clean[key] = _json_safe_scalar(item.get(key), max_text_len=120)
+        clean_items.append(clean)
+    return clean_items
+
+
+def _sanitize_nav_state_info(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    clean: Dict[str, Any] = {}
+    for idx, (key, val) in enumerate(value.items()):
+        if idx >= 24:
+            break
+        clean[str(key)[:48]] = _json_safe_scalar(val, max_text_len=120)
+    return clean
 
 
 def _camera_udp_clear_stale(now: Optional[float] = None) -> None:
@@ -1925,12 +2034,28 @@ def _get_runtime_status() -> Dict[str, Any]:
             if nav_infer_last_completed_monotonic <= 0.0
             else int((time.monotonic() - nav_infer_last_completed_monotonic) * 1000.0)
         ),
+        "nav_infer_min_interval_ms": NAV_INFER_MIN_INTERVAL_MS,
+        "nav_infer_last_started_seq": nav_infer_last_started_seq,
+        "nav_infer_last_completed_seq": nav_infer_last_completed_seq,
+        "nav_infer_last_decode_ms": nav_infer_last_decode_ms,
+        "nav_infer_last_source_age_ms": nav_infer_last_source_age_ms,
+        "nav_infer_skipped_busy": nav_infer_skipped_busy_count,
+        "nav_infer_skipped_throttle": nav_infer_skipped_throttle_count,
     }
 
 
 @app.get("/api/test/status")
 def test_status():
     return _get_runtime_status()
+
+
+@app.get("/api/perf/status")
+def perf_status():
+    return {
+        "runtime": _get_runtime_status(),
+        "camera": camera_stats(),
+        "imu": imu_status(),
+    }
 
 
 @app.get("/api/camera/stats")
@@ -2900,22 +3025,34 @@ async def _run_traffic_infer_async(image_bgr: np.ndarray) -> Tuple[np.ndarray, n
     return raw_frame, vis_image
 
 
-async def _run_navigation_infer_async(image_bgr: np.ndarray):
+async def _run_navigation_infer_async(
+    image_bgr: np.ndarray,
+    source_seq: int,
+    decode_ms: int = 0,
+    source_age_ms: Optional[int] = None,
+):
     global nav_infer_active, nav_infer_started_count, nav_infer_completed_count
     global nav_infer_error_count, nav_infer_last_ms, nav_infer_max_ms
     global nav_infer_last_state, nav_infer_last_guidance, nav_infer_last_error
-    global nav_infer_last_completed_monotonic
+    global nav_infer_last_completed_monotonic, nav_infer_last_started_monotonic
+    global nav_infer_last_started_seq, nav_infer_last_completed_seq
+    global nav_infer_last_decode_ms, nav_infer_last_source_age_ms
 
     raw_frame = image_bgr
     nav_infer_started_count += 1
     nav_infer_active = True
     started = time.monotonic()
+    nav_infer_last_started_monotonic = started
+    nav_infer_last_started_seq = int(source_seq or 0)
+    nav_infer_last_decode_ms = int(max(0, decode_ms))
+    nav_infer_last_source_age_ms = source_age_ms
     try:
         result = await asyncio.to_thread(orchestrator.process_frame, raw_frame)
         elapsed_ms = int((time.monotonic() - started) * 1000.0)
         nav_infer_completed_count += 1
         nav_infer_last_ms = elapsed_ms
         nav_infer_max_ms = max(nav_infer_max_ms, elapsed_ms)
+        nav_infer_last_completed_seq = int(source_seq or 0)
         nav_infer_last_state = str(getattr(result, "state", "") or "")
         nav_infer_last_guidance = str(getattr(result, "guidance_text", "") or "")
         nav_infer_last_error = ""
@@ -2931,6 +3068,7 @@ async def _run_navigation_infer_async(image_bgr: np.ndarray):
 async def camera_processor_loop():
     """\n    独立推理协程：永远只处理“最新帧”，旧帧直接被覆盖。\n    """
     global camera_latest_jpeg, camera_latest_seq
+    global nav_infer_skipped_busy_count, nav_infer_skipped_throttle_count
     frame_counter = 0
     last_seq = -1
     process_sleep = 1.0 / float(CAMERA_PIPELINE_FPS)
@@ -3022,13 +3160,23 @@ async def camera_processor_loop():
                                 await ui_broadcast_final(f"[导航] {res.guidance_text}")
                             except Exception:
                                 pass
+                        extras = getattr(res, "extras", {}) or {}
+                        if not isinstance(extras, dict):
+                            extras = {}
+                        frame_h = int(infer_raw.shape[0]) if hasattr(infer_raw, "shape") and len(infer_raw.shape) >= 2 else 0
+                        frame_w = int(infer_raw.shape[1]) if hasattr(infer_raw, "shape") and len(infer_raw.shape) >= 2 else 0
                         await nav_event_broadcast({
                             "type": "nav_result",
                             "mode": nav_infer_mode,
                             "guidance": str(getattr(res, "guidance_text", "") or ""),
                             "latency_ms": nav_infer_last_ms,
                             "camera_seq": camera_latest_seq,
+                            "infer_source_seq": nav_infer_last_completed_seq,
                             "frame_id": nav_infer_completed_count,
+                            "frame_width": frame_w,
+                            "frame_height": frame_h,
+                            "visualizations": _sanitize_nav_visualizations(extras.get("visualizations", [])),
+                            "state_info": _sanitize_nav_state_info(extras.get("state_info", {})),
                             "timestamp_ms": int(time.time() * 1000),
                         })
 
@@ -3066,6 +3214,7 @@ async def camera_processor_loop():
                 traffic_frames_since_infer = 0
 
             bgr = None
+            decode_elapsed_ms = 0
             should_run_nav_infer = False
             should_decode_for_nav = False
             viewer_should_encode_nav_overlay = False
@@ -3075,13 +3224,25 @@ async def camera_processor_loop():
                 nav_frames_since_infer += 1
                 if viewer_needs_processed_frame:
                     nav_viewer_frames_since_overlay += 1
+                wants_nav_infer = (
+                    nav_frame_cache.annotated_frame is None
+                    or nav_frames_since_infer >= PATH_FRAME_DIV
+                )
+                first_nav_result_needed = nav_frame_cache.annotated_frame is None
+                nav_interval_ready = (
+                    first_nav_result_needed
+                    or NAV_INFER_MIN_INTERVAL_MS <= 0
+                    or (time.monotonic() - nav_infer_last_started_monotonic) >= NAV_INFER_MIN_INTERVAL_SEC
+                )
                 should_run_nav_infer = (
                     nav_infer_task is None
-                    and (
-                        nav_frame_cache.annotated_frame is None
-                        or nav_frames_since_infer >= PATH_FRAME_DIV
-                    )
+                    and wants_nav_infer
+                    and nav_interval_ready
                 )
+                if wants_nav_infer and nav_infer_task is not None:
+                    nav_infer_skipped_busy_count += 1
+                elif wants_nav_infer and not nav_interval_ready:
+                    nav_infer_skipped_throttle_count += 1
                 viewer_should_encode_nav_overlay = bool(
                     viewer_needs_processed_frame
                     and nav_frame_cache.annotated_frame is not None
@@ -3105,7 +3266,9 @@ async def camera_processor_loop():
             if should_decode_for_traffic or should_decode_for_nav:
                 try:
                     # Decode/rotate off the event loop to reduce jitter.
+                    decode_started = time.monotonic()
                     bgr = await asyncio.to_thread(_decode_rotate_bgr, data)
+                    decode_elapsed_ms = int((time.monotonic() - decode_started) * 1000.0)
                 except Exception as e:
                     if frame_counter % 120 == 0:
                         print(f"[CAMERA PROC] decode error: {e}", flush=True)
@@ -3155,7 +3318,19 @@ async def camera_processor_loop():
                 try:
                     if should_run_nav_infer and bgr is not None:
                         nav_infer_mode = nav_cache_mode
-                        nav_infer_task = asyncio.create_task(_run_navigation_infer_async(bgr))
+                        source_age_ms = (
+                            None
+                            if camera_last_frame_monotonic <= 0.0
+                            else int(max(0.0, time.monotonic() - camera_last_frame_monotonic) * 1000.0)
+                        )
+                        nav_infer_task = asyncio.create_task(
+                            _run_navigation_infer_async(
+                                bgr,
+                                source_seq=seq,
+                                decode_ms=decode_elapsed_ms,
+                                source_age_ms=source_age_ms,
+                            )
+                        )
                         nav_frames_since_infer = 0
                     overlay_sent = False
                     if viewer_should_encode_nav_overlay and bgr is not None:

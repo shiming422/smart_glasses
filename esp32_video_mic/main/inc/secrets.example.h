@@ -4,3 +4,7 @@
 #define SEC_WIFI_SSID       "YOUR_2G_WIFI_SSID"
 #define SEC_WIFI_PASS       "YOUR_WIFI_PASSWORD"
 #define SEC_DASHSCOPE_KEY   "YOUR_DASHSCOPE_API_KEY"
+
+// Optional cloud/demo backend fallback. Leave empty for LAN-only auto-discovery.
+#define SEC_BACKEND_FALLBACK_HOST ""
+#define SEC_BACKEND_FALLBACK_PORT 8765

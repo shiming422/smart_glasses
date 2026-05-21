@@ -554,7 +554,19 @@ static void cam_ctrl_ws_task(void *arg) {
     esp_websocket_register_events(s_ctrl_ws, WEBSOCKET_EVENT_ANY, cam_ctrl_event_handler, NULL);
     esp_websocket_client_start(s_ctrl_ws);
 
+    TickType_t last_force_restart = 0;
     while (1) {
+        if (s_ctrl_ws && !esp_websocket_client_is_connected(s_ctrl_ws)) {
+            s_ctrl_ws_ready = false;
+            TickType_t now = xTaskGetTickCount();
+            if ((now - last_force_restart) >= pdMS_TO_TICKS(APP_WS_FORCE_RESTART_MS)) {
+                ESP_LOGW(TAG, "camera_ctrl offline, force restart client");
+                esp_websocket_client_stop(s_ctrl_ws);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_websocket_client_start(s_ctrl_ws);
+                last_force_restart = now;
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

@@ -32,6 +32,14 @@
 
 // Backend config. The host is discovered at runtime via UDP broadcast.
 #define APP_SERVER_PORT     8765
+#ifndef SEC_BACKEND_FALLBACK_HOST
+#define SEC_BACKEND_FALLBACK_HOST ""
+#endif
+#ifndef SEC_BACKEND_FALLBACK_PORT
+#define SEC_BACKEND_FALLBACK_PORT APP_SERVER_PORT
+#endif
+#define APP_BACKEND_FALLBACK_HOST SEC_BACKEND_FALLBACK_HOST
+#define APP_BACKEND_FALLBACK_PORT SEC_BACKEND_FALLBACK_PORT
 #define APP_DISCOVERY_PORT  54321
 #define APP_DISCOVERY_REQUEST "AIGLASS_DISCOVER"
 #define APP_DISCOVERY_PREFIX  "AIGLASS_HOST:"
@@ -83,6 +91,7 @@
 #define APP_WS_KEEPALIVE_INTERVAL 5
 #define APP_WS_KEEPALIVE_COUNT    3
 #define APP_WS_SEND_TIMEOUT_MS    3000
+#define APP_WS_FORCE_RESTART_MS   30000
 
 // This board should not pull /stream.wav; the audio+IMU board owns playback.
 #define APP_WAV_STREAM_ENABLE 0

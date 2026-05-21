@@ -10,9 +10,12 @@
 #define DEVICE_ROLE_AUDIO_IMU 1
 #define ENABLE_CAMERA 0
 #define ENABLE_MIC_UPLINK 0
-#define ENABLE_SPEAKER_PLAYBACK 0
+#define ENABLE_SPEAKER_PLAYBACK 1
 #if ENABLE_CAMERA
 #include <esp_camera.h>
+#else
+typedef int framesize_t;
+typedef struct camera_fb_t camera_fb_t;
 #endif
 #include <ArduinoWebsockets.h>
 #include "ESP_I2S.h"
@@ -60,12 +63,17 @@ using namespace websockets;
 #define WIFI_DNS_VALUE ""
 #endif
 
+#ifndef BACKEND_FALLBACK_HOST_VALUE
+#define BACKEND_FALLBACK_HOST_VALUE ""
+#endif
+
 const char* WIFI_SSID   = WIFI_SSID_VALUE;
 const char* WIFI_PASS   = WIFI_PASS_VALUE;
 const char* WIFI_LOCAL_IP = WIFI_LOCAL_IP_VALUE;
 const char* WIFI_GATEWAY = WIFI_GATEWAY_VALUE;
 const char* WIFI_SUBNET = WIFI_SUBNET_VALUE;
 const char* WIFI_DNS = WIFI_DNS_VALUE;
+const char* BACKEND_FALLBACK_HOST = BACKEND_FALLBACK_HOST_VALUE;
 const uint16_t BACKEND_HTTP_PORT = 8765;
 const uint16_t BACKEND_UDP_PORT  = 12345;
 
@@ -79,6 +87,24 @@ const uint16_t SERVER_PORT = BACKEND_HTTP_PORT;
 #define DISCOVERY_PORT     54321
 #define DISCOVERY_REQUEST  "AIGLASS_DISCOVER"
 #define DISCOVERY_PREFIX   "AIGLASS_HOST:"
+
+bool set_backend_host(const char* host, const char* source) {
+  if (!host || host[0] == '\0') {
+    return false;
+  }
+  strncpy(g_backend_host, host, sizeof(g_backend_host) - 1);
+  g_backend_host[sizeof(g_backend_host) - 1] = '\0';
+  char* trim = strpbrk(g_backend_host, "\r\n \t");
+  if (trim) {
+    *trim = '\0';
+  }
+  if (!g_backend_ip.fromString(g_backend_host)) {
+    Serial.printf("[DISC] invalid backend ip from %s: %s\n", source, g_backend_host);
+    return false;
+  }
+  Serial.printf("[DISC] %s backend: %s\n", source, g_backend_host);
+  return true;
+}
 
 bool discover_backend(uint32_t timeout_ms = 8000) {
   WiFiUDP disc;
@@ -103,19 +129,11 @@ bool discover_backend(uint32_t timeout_ms = 8000) {
       disc.read(buf, sizeof(buf) - 1);
       if (strncmp(buf, DISCOVERY_PREFIX, strlen(DISCOVERY_PREFIX)) == 0) {
         const char* ip_start = buf + strlen(DISCOVERY_PREFIX);
-        strncpy(g_backend_host, ip_start, sizeof(g_backend_host) - 1);
-        g_backend_host[sizeof(g_backend_host) - 1] = '\0';
-        char* trim = strpbrk(g_backend_host, "\r\n \t");
-        if (trim) {
-          *trim = '\0';
-        }
-        if (!g_backend_ip.fromString(g_backend_host)) {
-          Serial.printf("[DISC] invalid backend ip: %s\n", g_backend_host);
+        if (!set_backend_host(ip_start, "found")) {
           disc.stop();
           return false;
         }
         disc.stop();
-        Serial.printf("[DISC] found backend: %s\n", g_backend_host);
         return true;
       }
     }
@@ -123,6 +141,9 @@ bool discover_backend(uint32_t timeout_ms = 8000) {
   }
 
   disc.stop();
+  if (set_backend_host(BACKEND_FALLBACK_HOST, "fallback")) {
+    return true;
+  }
   Serial.println("[DISC] timeout, no backend found");
   return false;
 }

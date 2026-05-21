@@ -34,6 +34,7 @@
   const navCtx = navOverlayCanvas ? navOverlayCanvas.getContext('2d') : null;
   const DEFAULT_VIEWER_RAW_WIDTH = 720;
   const DEFAULT_VIEWER_RAW_HEIGHT = 1280;
+  const VIEWER_MAX_SCALE = 1.55;
 
   // === 获取/创建聊天容器（关键补丁） ===
   let chatContainer = document.getElementById('chatContainer');
@@ -348,9 +349,9 @@
   function updateViewerDisplaySize(){
     const nativeWidth = Math.max(1, viewerLayout.displayWidth | 0);
     const nativeHeight = Math.max(1, viewerLayout.displayHeight | 0);
-    const availableWidth = Math.max(1, ($stage && $stage.clientWidth) || nativeWidth);
-    const availableHeight = Math.max(1, ($stage && $stage.clientHeight) || nativeHeight);
-    const scale = Math.min(1, availableWidth / nativeWidth, availableHeight / nativeHeight);
+    const availableWidth = Math.max(1, (($stage && $stage.clientWidth) || nativeWidth) - 16);
+    const availableHeight = Math.max(1, (($stage && $stage.clientHeight) || nativeHeight) - 16);
+    const scale = Math.min(VIEWER_MAX_SCALE, availableWidth / nativeWidth, availableHeight / nativeHeight);
     const cssWidth = Math.max(1, Math.round(nativeWidth * scale));
     const cssHeight = Math.max(1, Math.round(nativeHeight * scale));
 
@@ -513,31 +514,11 @@
     const h = navOverlayCanvas.height;
     navCtx.setTransform(1, 0, 0, 1, 0, 0);
     navCtx.clearRect(0, 0, w, h);
-    if (forceClear || !lastNavEvent) return;
-
-    const age = performance.now() - lastNavEvent.receivedAt;
-    if (age > 5000) return;
-
-    const guidance = (lastNavEvent.guidance || '').trim();
-    const mode = lastNavEvent.mode || 'NAV';
-    const latency = Number.isFinite(lastNavEvent.latency_ms) ? `${lastNavEvent.latency_ms}ms` : '--';
-    const text = guidance || '导航运行中';
-    const label = `${mode}  ${latency}`;
-    const pad = Math.max(12, Math.round(w * 0.018));
-    const boxH = Math.max(72, Math.round(h * 0.09));
-    const boxY = h - boxH - pad;
-
-    navCtx.fillStyle = 'rgba(0, 0, 0, 0.58)';
-    navCtx.fillRect(pad, boxY, w - pad * 2, boxH);
-    navCtx.strokeStyle = 'rgba(126, 231, 135, 0.85)';
-    navCtx.lineWidth = 2;
-    navCtx.strokeRect(pad, boxY, w - pad * 2, boxH);
-    navCtx.fillStyle = '#7ee787';
-    navCtx.font = `${Math.max(16, Math.round(h * 0.018))}px system-ui, "Microsoft YaHei", sans-serif`;
-    navCtx.fillText(label, pad * 2, boxY + Math.round(boxH * 0.34));
-    navCtx.fillStyle = '#ffffff';
-    navCtx.font = `700 ${Math.max(24, Math.round(h * 0.032))}px system-ui, "Microsoft YaHei", sans-serif`;
-    navCtx.fillText(text.slice(0, 28), pad * 2, boxY + Math.round(boxH * 0.76));
+    void forceClear;
+    void w;
+    void h;
+    // Navigation annotations are now drawn by the original backend OpenCV path.
+    // Keep this canvas transparent so it does not fight with the native overlay.
   }
 
   function drawRotatedFrame(src, srcW, srcH){
@@ -548,6 +529,8 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, cw, ch);
+    ctx.translate(0, ch);
+    ctx.scale(1, -1);
     ctx.translate(cw, 0);
     ctx.rotate(Math.PI / 2);
     ctx.drawImage(src, 0, 0, srcW, srcH);

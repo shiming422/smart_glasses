@@ -1,0 +1,82 @@
+﻿FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.11-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1 \
+    PYTHONIOENCODING=utf-8 \
+    PYGAME_HIDE_SUPPORT_PROMPT=1 \
+    SDL_AUDIODRIVER=dummy \
+    YOLO_CONFIG_DIR=/tmp/Ultralytics \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+WORKDIR /app
+
+RUN set -eux; \
+    sed -i 's#http://deb.debian.org/debian-security#http://mirrors.aliyun.com/debian-security#g; s#http://deb.debian.org/debian#http://mirrors.aliyun.com/debian#g' /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    ffmpeg \
+    fonts-wqy-microhei \
+    git \
+    libasound2 \
+    libglib2.0-0 \
+    libgl1 \
+    libgomp1 \
+    libsm6 \
+    libsndfile1 \
+    libxext6 \
+    libxrender1 \
+    portaudio19-dev \
+    python3-dev \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+COPY requirements.txt .
+RUN printf '%s\n' \
+    'numpy==1.24.3' \
+    'scipy==1.10.1' \
+    'matplotlib==3.7.5' \
+    'Pillow==10.1.0' \
+    > /tmp/cloud-constraints.txt
+RUN python -m pip install --no-cache-dir -c /tmp/cloud-constraints.txt \
+    filelock \
+    typing-extensions \
+    sympy \
+    networkx \
+    jinja2 \
+    MarkupSafe \
+    mpmath \
+    requests==2.28.1 \
+    charset-normalizer==2.1.1 \
+    idna==3.4 \
+    urllib3==1.26.13 \
+    certifi==2022.12.7 \
+    numpy==1.24.3 \
+    Pillow==10.1.0 \
+    scipy==1.10.1 \
+    matplotlib==3.7.5
+RUN python -m pip install --no-cache-dir --no-deps \
+    torch==2.0.1+cpu \
+    torchvision==0.15.2+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
+RUN grep -v -E '^(torch|torchvision)==|^git\+https://github.com/ultralytics/CLIP.git' requirements.txt > /tmp/requirements-docker.txt \
+    && for attempt in 1 2 3; do \
+        python -m pip install --no-cache-dir -c /tmp/cloud-constraints.txt -r /tmp/requirements-docker.txt && break; \
+        if [ "$attempt" = "3" ]; then exit 1; fi; \
+        sleep 10; \
+    done
+
+COPY . .
+RUN if [ -f cpp_gateway/aiglass_cam_gateway.cpp ]; then \
+      g++ -O3 -std=c++17 -Wall -Wextra cpp_gateway/aiglass_cam_gateway.cpp -o /usr/local/bin/aiglass_cam_gateway; \
+    fi
+RUN mkdir -p recordings model music voice static templates runtime_logs /tmp/Ultralytics
+
+EXPOSE 8765/tcp 12345/udp 22345/udp 54321/udp
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f "http://localhost:${AIGLASS_PORT:-8765}/api/health" || exit 1
+CMD ["python", "-u", "app_main.py"]

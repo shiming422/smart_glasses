@@ -28,6 +28,22 @@ static TaskHandle_t s_discovery_task = NULL;
 static char s_backend_host[64] = "";
 static int s_backend_port = APP_SERVER_PORT;
 
+static void store_backend(const char *host, int port);
+
+static bool use_fallback_backend(void) {
+    const char *host = APP_BACKEND_FALLBACK_HOST;
+    int port = APP_BACKEND_FALLBACK_PORT;
+    if (!host || host[0] == '\0') {
+        return false;
+    }
+    if (port <= 0 || port > 65535) {
+        port = APP_SERVER_PORT;
+    }
+    ESP_LOGW(TAG, "using backend fallback: %s:%d", host, port);
+    store_backend(host, port);
+    return true;
+}
+
 static bool parse_backend_response(char *buf, char *host, size_t host_len, int *port) {
     const size_t prefix_len = strlen(APP_DISCOVERY_PREFIX);
     if (!buf || !host || host_len == 0 || strncmp(buf, APP_DISCOVERY_PREFIX, prefix_len) != 0) {
@@ -169,6 +185,9 @@ static void backend_discovery_task(void *arg) {
 
         xEventGroupWaitBits(wifi_evt, APP_WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
         bool found = discovery_once(APP_DISCOVERY_TIMEOUT_MS);
+        if (!found) {
+            found = use_fallback_backend();
+        }
         vTaskDelay(pdMS_TO_TICKS(found ? APP_DISCOVERY_REFRESH_MS : APP_DISCOVERY_RETRY_MS));
     }
 }

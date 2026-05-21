@@ -698,7 +698,20 @@ static void aud_ws_task(void *arg) {
     esp_websocket_register_events(s_aud_ws, WEBSOCKET_EVENT_ANY, aud_ws_event_handler, NULL);
     esp_websocket_client_start(s_aud_ws);
 
+    TickType_t last_force_restart = 0;
     while (1) {
+        if (s_aud_ws && !aud_ws_is_connected()) {
+            s_aud_ws_ready = false;
+            s_run_audio_stream = false;
+            TickType_t now = xTaskGetTickCount();
+            if ((now - last_force_restart) >= pdMS_TO_TICKS(APP_WS_FORCE_RESTART_MS)) {
+                ESP_LOGW(TAG, "audio ws offline, force restart client");
+                esp_websocket_client_stop(s_aud_ws);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_websocket_client_start(s_aud_ws);
+                last_force_restart = now;
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

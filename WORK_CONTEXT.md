@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-21 10:10 Asia/Shanghai
+Last updated: 2026-05-21 16:01 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -107,8 +107,8 @@ Required backend interfaces:
 - `TCP 22346`: C++ gateway to Python record stream. In external gateway mode Python listens on `0.0.0.0:22346` inside Docker and Docker maps it to the host; the Windows C++ gateway connects to `127.0.0.1:22346`. Header is fixed little-endian 32 bytes with magic literal bytes `AIGF`, version `1`, type `1=jpeg` / `2=stats_json` / `3=heartbeat`, frame id, timestamp ms, payload length, and payload CRC32.
 - `WebSocket /ws/camera_ctrl`: ESP32A lightweight camera control channel. Backend sends profile commands for navigation/chat modes and UDP auto-downgrade.
 - `WebSocket /ws/camera`: binary JPEG frames from ESP32A, retained only as manual debug/fallback when `AIGLASS_CAMERA_SOURCE=ws` or `esp32_ws`.
-- `WebSocket /ws/viewer`: browser camera preview, now raw-JPEG-first. Navigation mode does not require backend annotated JPEG re-encode.
-- `WebSocket /ws/nav_events`: browser navigation JSON events for overlay drawing in the frontend canvas.
+- `WebSocket /ws/viewer`: browser camera preview. Navigation mode now uses the native backend OpenCV annotated JPEG path from the blind-path workflow, so the original recognition drawings are visible in the preview.
+- `WebSocket /ws/nav_events`: browser navigation JSON events for mode/guidance/status. Frontend no longer draws its own recognition masks over the preview.
 - `GET /api/camera/stats`: camera transport stats including protocol, UDP FPS, JPEG average, drop/timeout/CRC counters, control clients, and latest frame age.
 - `WebSocket /ws_audio`: text controls plus PCM16 mic chunks from ESP32A.
 - `WebSocket /ws/imu_in`: optional ESP32B IMU JSON uplink; backend normalizes `timestamp_ms` to `ts`, updates the same IMU store/broadcast path, and tracks `/api/imu/status`.
@@ -126,7 +126,7 @@ Backend `.env` items that must be checked before hardware testing:
 - `AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1`, `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, `AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`, `AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`, and `AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346` should be set for the current Windows-host C++ gateway path.
 - `AIGLASS_CAMERA_UDP_PORT=22345`, `AIGLASS_CAMERA_UDP_FRAME_TTL_MS=250`, and `AIGLASS_CAMERA_CTRL_WS_ENABLED=1` should be set for the A-board UDP transport.
 - `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=35` prevents transient gateway/A-board reconnect drops from immediately forcing a downshift during startup.
-- `AIGLASS_NAV_DIRECT_VIEWER=1` keeps `/ws/viewer` raw-first during navigation while `/ws/nav_events` carries overlay guidance.
+- `AIGLASS_NAV_DIRECT_VIEWER=0` makes `/ws/viewer` send backend-native annotated JPEGs during navigation. Set it to `1` only when testing the raw-first frontend-overlay path.
 - Use `AIGLASS_CAMERA_SOURCE=ws` only for the old direct `/ws/camera` JPEG debug fallback.
 - Backend discovery responder must listen on UDP `54321` and return the backend machine IP reachable by the ESP32 boards.
 - If running backend in Docker bridge mode, set `AIGLASS_DISCOVERY_HOST` in local `backend\.env` to the PC LAN/Wi-Fi IP reachable by both boards. Do not commit real `.env` files.
@@ -139,10 +139,11 @@ Fallback rule:
 
 Current frontend / blind-path runtime notes:
 
-- Backend serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` now cache-busts `main.js` with version `20260520-udp-camera-nav-events`.
-- `/ws/viewer` receives raw JPEG frames by default. The backend no longer re-encodes blind-path annotated JPEGs for the normal preview path when `AIGLASS_NAV_DIRECT_VIEWER=1`.
-- `/ws/nav_events` sends structured navigation results (`type=nav_result`, mode, guidance, latency, camera sequence/frame id, timestamp). The frontend draws direction/status text on transparent `navOverlayCanvas`.
-- AI inference and browser preview are decoupled: slow navigation inference should not create a video backlog. TTS and `/ws_ui` text broadcast remain.
+- Backend serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` now cache-busts `main.js` with version `20260521-native-nav-overlay-flip`.
+- Frontend preview still rotates the camera frame and flips it vertically for the current mounting direction, and the preview area is larger than the previous layout.
+- During navigation, `/ws/viewer` now uses the original backend blind-path drawing code (`BlindPathNavigator._draw_visualizations()` via `res.annotated_image`) rather than a frontend canvas recreation.
+- `/ws/nav_events` still sends structured navigation results (`type=nav_result`, mode, guidance, latency, camera sequence/frame id, timestamp, optional visualization metadata/state info), but frontend recognition drawing is intentionally disabled so it does not fight with the native annotated JPEG.
+- AI inference remains latest-frame-only; the preview may show native annotated frames during navigation and raw frames otherwise. TTS and `/ws_ui` text broadcast remain.
 - If blind-path preview is still laggy after this UDP/latest-frame change, ask the hardware/ESP32 window to measure ESP32A serial stats: capture FPS, UDP complete-send FPS, queue drop, abort-old-frame, average JPEG bytes, average/max send ms, RSSI, and task core numbers. Likely remaining causes are ESP32A camera encode/upload time or 2.4 GHz Wi-Fi quality.
 
 ## Video Latency Optimization Plan
@@ -183,7 +184,7 @@ Phase 1 backend refinements, if hardware UDP works but still feels laggy:
 - Tighten viewer backpressure: keep only latest frame per viewer and close slow viewers quickly; lower `AIGLASS_VIEWER_SEND_TIMEOUT_MS` from the conservative example value if needed.
 - Improve camera auto-tune: current backend only steps down to `SET:FPS=8` and then `SET:QUALITY=30`. Add recovery/upshift logic after a stable period and consider QVGA fallback if `drop_ratio_10s`, `last_frame_age_ms`, or `avg_jpeg_bytes` stay high.
 - Keep navigation inference latest-frame-only. Do not allow inference queues to accumulate; if inference is busy, skip old frames and process the newest available frame when the task finishes.
-- Keep direct viewer enabled during navigation with `AIGLASS_NAV_DIRECT_VIEWER=1`; do not reintroduce per-frame annotated JPEG re-encoding on the preview path.
+- Current user preference is native backend drawing for navigation preview: keep `AIGLASS_NAV_DIRECT_VIEWER=0` unless latency becomes unacceptable and raw-first debugging is explicitly requested.
 
 Phase 2 C++ gateway status:
 
@@ -233,6 +234,31 @@ Do not do yet:
 ## Verification Log
 
 2026-05-21:
+
+- Product-mode cloud verification completed at 2026-05-21 16:01 Asia/Shanghai. The intended demo path is now: ESP32A/B join any internet-capable 2.4 GHz Wi-Fi by changing only the firmware Wi-Fi SSID/password, then use public fallback `47.110.89.207:8765` when LAN discovery is unavailable. The backend is expected to stay on by default on ECS through Docker Compose `restart: unless-stopped`.
+- ECS backend current source of truth: host `47.110.89.207`, backend directory `/root/smart_glasses_esp32_workspace/backend`, compose file `docker-compose.cloud.yml`, container `aiglass`, image `aiglass-backend:cpu-cloud`. Public ports required for demo are TCP `8765`, UDP `22345` camera, UDP `12345` IMU, and UDP `54321` discovery. Keep security group rules open for the demo, then narrow them later if needed.
+- Cloud health recheck passed from this PC: `GET http://47.110.89.207:8765/api/health` returned `OK`; `GET /api/perf/status` returned `backend_ready=true`, `camera_source_key=udp`, `camera_source_active=true`, `audio_ws_enabled=true`, `stream_audio_clients=1`, and live IMU data.
+- Live hardware status before navigation test: ESP32A public UDP camera was active at `complete_fps=10.01`, `avg_jpeg_bytes=7037`, `last_frame_age_ms=148`, `crc_errors=0`, `invalid_packets=0`, `ctrl_clients=1`, `ctrl_last_command=SET:FPS=10`; ESP32A mic WebSocket was online with `audio_last_rx_age_ms=93`; ESP32B IMU WebSocket was online with `ws_in_clients=1`, `ws_in_packets=5048`, and populated posture data.
+- 30-second cloud blind-navigation test passed. During `BLINDPATH_NAV`, camera stayed at `complete_fps=10.01`, `last_frame_age_ms=44`, navigation inference reached `started=17`, `completed=16`, `errors=0`, with `busy_skips=194` and `throttle_skips=42`, proving latest-frame/rate-limit behavior is active instead of queue buildup. After `stop_nav`, backend returned to `CHAT`, camera stayed around `10.03 fps`, `/stream.wav` still had `stream_audio_clients=1`, mic client remained online, and IMU packets continued from `5624` to `5645`.
+- Current limitation/next polish: `nav_infer_max_ms` still saw a slow sample around `5587 ms`; this is AI/business inference latency rather than camera transport latency. For the demo, the preview and IMU/audio paths are usable; next optimization should measure and reduce CPU inference spikes or use stronger compute only if the actual demo task requires it.
+- Git discipline: keep this cloud/product-mode baseline committed before further experiments. Do not commit private files (`backend/.env`, `esp32_video_mic/main/inc/secrets.h`, `esp32_audio_imu/wifi_profile.h`). If the public IP, server compose file, or firmware fallback changes, update this file in the same commit.
+
+- Cloud ECS hardware integration baseline completed.
+- Public backend is `47.110.89.207:8765`; browser/API access works from the PC. Security group currently allows demo TCP/UDP ingress. Cloud backend receives ESP32 traffic directly with `AIGLASS_CAMERA_SOURCE=udp`, camera UDP `22345`, IMU UDP `12345`, discovery UDP `54321`, and HTTP/WebSocket `8765`.
+- ESP32A `esp32_video_mic` now has a public backend fallback in ignored `main/inc/secrets.h`: `SEC_BACKEND_FALLBACK_HOST=47.110.89.207`, `SEC_BACKEND_FALLBACK_PORT=8765`. After LAN broadcast discovery times out, serial shows `using backend fallback: 47.110.89.207:8765`.
+- ESP32B `esp32_audio_imu` now has public fallback in ignored `wifi_profile.h`: `BACKEND_FALLBACK_HOST_VALUE=47.110.89.207`, and `ENABLE_SPEAKER_PLAYBACK=1` for full audio receive testing.
+- Firmware builds passed: ESP32A built with ESP-IDF 5.5.2 and produced `build/project-name.bin`; ESP32B built with local PlatformIO and produced `.pio/build/xiao_esp32s3/firmware.bin`.
+- Flashing passed: ESP32A flashed on `COM22`, MAC `98:a3:16:f7:01:9c`; ESP32B flashed on `COM30`, MAC `98:a3:16:f8:08:ac`. PlatformIO upload hit a Windows GBK progress output crash, so ESP32B was flashed successfully with direct `python -m esptool ... write-flash --no-progress`.
+- ESP32A serial/public video result: Wi-Fi RSSI around `-39` to `-44 dBm`; 5-second windows stayed around `cap_5s=50/51`, `sent_5s=50/51`, `fail_5s=0`, `avg_jpeg=7045-7077`, `avg_send_ms=3-4`, `fps=10`, `q=40`. Public `/api/camera/stats` showed real ESP32A packets from WAN address, `complete_fps=9.6-9.99`, `last_frame_age_ms=0-108`, `avg_jpeg_bytes=~7045`, `crc_errors=0`, `drop_ratio_10s=0.0`, `ctrl_clients=1`, `ctrl_last_command=SET:FPS=10`.
+- ESP32A mic uplink result: public `/api/test/status` showed `audio_client=112.23.177.84:11633`, `audio_ws_enabled=true`, and `audio_last_rx_age_ms=25`, confirming `/ws_audio` is live against the cloud backend.
+- ESP32B IMU result: serial showed `IMU-WS sent=... ws_fail=2 udp_fail=0 -> 47.110.89.207:8765/ws/imu_in`; public `/api/imu/status` showed `ws_in_packets` growing continuously, latest posture populated, and decode errors `0`. `ws_in_clients` may temporarily be greater than 1 after serial-open/reset cycles because old WAN WebSocket connections remain half-open; data continues updating.
+- ESP32B audio receive result: serial repeatedly showed `/stream.wav` connection and `WAV ok: 8000/16bit/mono (chunked=1)`; public `/api/test/status` showed `stream_audio_clients=1`. Playback path is connected, but it currently reconnects often during idle/short stream periods; polish item is to make `/stream.wav` playback more continuous and reduce reconnect churn.
+- Public latency snapshot from PC to ECS: ICMP ping around `14-30 ms`; HTTP health `time_connect=0.034s`, `time_starttransfer=0.144s`. Camera preview transport is healthy at roughly 10 fps with server-side latest-frame age usually below `~110 ms`. Navigation inference on the CPU cloud backend is variable rather than transport-bound: samples included `nav_infer_last_ms=72` and an earlier slow sample around `3503 ms`, with `nav_infer_max_ms=5373` and `nav_infer_errors=0`; next optimization should separate "preview latency" from "AI inference latency".
+- Product target clarified: the normal demo/product path is public-cloud-first. ESP32A/B only need to join any Wi-Fi that can reach the public internet; LAN UDP discovery is a convenience for local development, and the firmware public fallback should keep the system working when LAN discovery is impossible. The backend should be a long-running Docker service on the ECS server.
+- Backend optimization implemented locally after the cloud baseline: `AIGLASS_NAV_INFER_MIN_INTERVAL_MS` defaults to `750`, so navigation inference is latest-frame-only and rate-limited instead of trying to keep up with every camera frame. `/api/test/status` now reports `nav_infer_min_interval_ms`, source sequence, decode time, frame age, busy skips, and throttle skips. New `/api/perf/status` returns runtime, camera, and IMU status together.
+- `/stream.wav` now has idle-silence keepalive controlled by `AIGLASS_STREAM_IDLE_SILENCE=1` and `AIGLASS_STREAM_IDLE_SILENCE_MS=20`, so ESP32B should keep one continuous WAV stream instead of reconnecting whenever no TTS audio is queued.
+- Added `backend/docker-compose.cloud.yml` as the reproducible ECS deployment file. It uses `restart: unless-stopped`, maps TCP `8765` plus UDP `22345`, `12345`, and `54321`, defaults to `AIGLASS_CAMERA_SOURCE=udp`, and advertises `AIGLASS_DISCOVERY_HOST=47.110.89.207`. This is the file to use on the server for the always-on public backend.
+- Verification completed locally for the optimization patch: `python -m py_compile backend\app_main.py backend\audio_stream.py`, `docker compose config --quiet`, and `docker compose -f docker-compose.cloud.yml config --quiet` all passed. Direct ECS deploy was not completed in this window because SSH to `root@47.110.89.207` rejected the available local key with `Permission denied (publickey)`.
 
 - External Windows C++ gateway fix completed after discovering Docker Desktop UDP `22345` published port did not deliver real LAN packets reliably to the container. Backend now supports `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, separates TCP bind host (`AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`) from gateway connect host (`AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`), and exposes TCP `22346`.
 - `backend\cpp_gateway\aiglass_cam_gateway.cpp` was ported to compile on both Linux and Windows sockets. Windows build passed with `C:\Users\shiming\mingw64\bin\g++.exe -O3 -std=c++17 -Wall -Wextra backend\cpp_gateway\aiglass_cam_gateway.cpp -lws2_32 -o backend\cpp_gateway\aiglass_cam_gateway.exe`.
