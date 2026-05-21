@@ -2,11 +2,24 @@
 
 本文件记录当前智能眼镜工程从拆分两块 ESP32 到 UDP 视频黄金基线、Phase 2 C++ 视频网关的主要提交。
 
-当前功能基线提交：`8310830`
+当前功能基线提交：`86fbb98`
 远端仓库：`https://github.com/shiming422/smart_glasses.git`  
 远端分支：`main`
 
 ## 当前 Phase 2 基线
+
+`86fbb98 Run C++ camera gateway on Windows host`
+
+这一版是当前带硬件验收版：
+
+- Windows 主机 C++ gateway 直接绑定真实 LAN UDP `22345`，绕开 Docker Desktop UDP 入站不稳定问题。
+- Docker Python 监听并映射 TCP `22346`，接收 Windows C++ gateway 推送的完整 JPEG/stats。
+- C++ gateway 源码已兼容 Linux/POSIX 与 Windows Winsock；Windows 构建脚本为 `backend/cpp_gateway/build_windows_gateway.ps1`，启动脚本为 `backend/cpp_gateway/start_host_gateway.ps1`。
+- 默认 Docker compose 不再发布 UDP `22345`，避免抢占主机 C++ gateway；Python UDP fallback 需要使用 `backend/docker-compose.udp-fallback.yml`。
+- CHAT 档调整为 `QUALITY=40 / 10 FPS`，导航档为 `VGA / QUALITY=30 / 10 FPS`，并增加自动调参暖机与稳定后恢复。
+- 收尾验证：`protocol=cpp_gateway`、`gateway_mode=external`、真实硬件约 `9.98 FPS`、`crc_errors=0`、`invalid_packets=0`、控制通道在线；30 秒导航回归 `nav_infer_errors=0`，B 板扬声器仍关闭且 IMU 上传正常。
+
+## 上一阶段 Phase 2 基线
 
 `8310830 Add C++ camera gateway and mute audio board speaker`
 
@@ -34,6 +47,7 @@
 
 | Commit | Time | Message |
 | --- | --- | --- |
+| `86fbb98` | 2026-05-21 10:42:07 +0800 | Run C++ camera gateway on Windows host |
 | `8310830` | 2026-05-21 00:22:55 +0800 | Add C++ camera gateway and mute audio board speaker |
 | `998659e` | 2026-05-20 23:12:47 +0800 | Mark golden hardware baseline before GitHub publish |
 | `902abd3` | 2026-05-20 23:02:21 +0800 | Record ESP32A UDP camera firewall validation |
@@ -86,6 +100,10 @@ ESP32A 增加后端自动发现能力，不再依赖硬编码后端 IP。
 ### `8310830`
 
 Phase 2 C++ 视频网关：后端默认 `cpp_gateway`，C++ 子进程监听 ESP32A UDP `22345` 并向 Python TCP `22346` 推完整 JPEG/stats。验证包括 `py_compile`、Docker build、C++ gateway 本地 UDP 注入、Python UDP fallback、WebSocket fallback、前端 UTF-8 页面、B 板 PlatformIO 构建和 `COM30` 烧录；B 板串口确认扬声器禁用且 `/api/imu/status` 仍有 IMU 数据。
+
+### `86fbb98`
+
+解决真实硬件没有走上 Phase 2 C++ 主链路的问题：把 C++ gateway 改为 Windows 主机外部模式，容器只开放 TCP `22346` 给 Python ingest，UDP `22345` 由主机 C++ 进程直接接收 ESP32A。同步加入 Windows 构建/启动脚本、Docker UDP fallback override、CHAT/导航相机档位调整、自动调参暖机与恢复逻辑，并完成真实硬件、前端、导航、IMU 的闭环验证。
 
 ## 查看完整 Git 日志
 
