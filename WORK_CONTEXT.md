@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-21 00:18 Asia/Shanghai
+Last updated: 2026-05-21 10:10 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -98,13 +98,13 @@ Docker runtime after workspace unification:
 - Frontend URL: `http://127.0.0.1:8765/`
 - Health URL: `http://127.0.0.1:8765/api/health`
 - Compose file: `backend\docker-compose.yml`
-- Docker port mapping must include TCP `8765`, UDP `12345`, UDP `22345`, and UDP `54321`.
+- Docker port mapping must include TCP `8765`, TCP `22346`, UDP `12345`, and UDP `54321`. In the current Windows-host external C++ gateway mode, host UDP `22345` is owned by `backend\cpp_gateway\aiglass_cam_gateway.exe`, not by Docker. Docker UDP `22345` is only for managed/container or Python UDP fallback tests.
 
 Required backend interfaces:
 
 - `GET /api/health`
-- `UDP 22345`: primary ESP32A fragmented JPEG latest-frame stream. In the default Phase 2 path this port is bound by the C++ camera gateway, not Python. Packet header is fixed little-endian, packed, 32 bytes: magic literal bytes `AIGC`, version `1`, header length `32`, source id `1`, frame id, timestamp ms, frame length, frame CRC32, chunk index/count, and payload length.
-- `TCP 127.0.0.1:22346`: internal-only C++ gateway to Python record stream. Header is fixed little-endian 32 bytes with magic literal bytes `AIGF`, version `1`, type `1=jpeg` / `2=stats_json` / `3=heartbeat`, frame id, timestamp ms, payload length, and payload CRC32. This port is not exposed outside Docker.
+- `UDP 22345`: primary ESP32A fragmented JPEG latest-frame stream. In the current default path this port is bound on Windows by `backend\cpp_gateway\aiglass_cam_gateway.exe`, not by Python and not by the Docker container. Packet header is fixed little-endian, packed, 32 bytes: magic literal bytes `AIGC`, version `1`, header length `32`, source id `1`, frame id, timestamp ms, frame length, frame CRC32, chunk index/count, and payload length.
+- `TCP 22346`: C++ gateway to Python record stream. In external gateway mode Python listens on `0.0.0.0:22346` inside Docker and Docker maps it to the host; the Windows C++ gateway connects to `127.0.0.1:22346`. Header is fixed little-endian 32 bytes with magic literal bytes `AIGF`, version `1`, type `1=jpeg` / `2=stats_json` / `3=heartbeat`, frame id, timestamp ms, payload length, and payload CRC32.
 - `WebSocket /ws/camera_ctrl`: ESP32A lightweight camera control channel. Backend sends profile commands for navigation/chat modes and UDP auto-downgrade.
 - `WebSocket /ws/camera`: binary JPEG frames from ESP32A, retained only as manual debug/fallback when `AIGLASS_CAMERA_SOURCE=ws` or `esp32_ws`.
 - `WebSocket /ws/viewer`: browser camera preview, now raw-JPEG-first. Navigation mode does not require backend annotated JPEG re-encode.
@@ -123,8 +123,9 @@ Backend `.env` items that must be checked before hardware testing:
 - `AIGLASS_DISCOVERY_PORT` should be `54321` for ESP32A/ESP32B backend discovery.
 - `AIGLASS_AUDIO_WS_ENABLED` should be `1` when testing ESP32A microphone upload.
 - `AIGLASS_CAMERA_SOURCE=cpp_gateway` is the default primary camera input.
-- `AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1`, `AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`, and `AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346` should be set for the Phase 2 C++ gateway path.
+- `AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1`, `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, `AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`, `AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`, and `AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346` should be set for the current Windows-host C++ gateway path.
 - `AIGLASS_CAMERA_UDP_PORT=22345`, `AIGLASS_CAMERA_UDP_FRAME_TTL_MS=250`, and `AIGLASS_CAMERA_CTRL_WS_ENABLED=1` should be set for the A-board UDP transport.
+- `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=35` prevents transient gateway/A-board reconnect drops from immediately forcing a downshift during startup.
 - `AIGLASS_NAV_DIRECT_VIEWER=1` keeps `/ws/viewer` raw-first during navigation while `/ws/nav_events` carries overlay guidance.
 - Use `AIGLASS_CAMERA_SOURCE=ws` only for the old direct `/ws/camera` JPEG debug fallback.
 - Backend discovery responder must listen on UDP `54321` and return the backend machine IP reachable by the ESP32 boards.
@@ -132,7 +133,7 @@ Backend `.env` items that must be checked before hardware testing:
 
 Fallback rule:
 
-- Normal operation should use `AIGLASS_CAMERA_SOURCE=cpp_gateway`.
+- Normal operation should use `AIGLASS_CAMERA_SOURCE=cpp_gateway` with `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`; start the Windows host gateway executable after Docker is up.
 - If the C++ gateway path fails, switch backend local `.env` to `AIGLASS_CAMERA_SOURCE=udp` to use the old Python UDP reassembler.
 - If UDP camera testing fails completely, switch backend local `.env` to `AIGLASS_CAMERA_SOURCE=ws` and temporarily restore/use the legacy A-board `/ws/camera` path for debug only.
 
@@ -148,19 +149,20 @@ Current frontend / blind-path runtime notes:
 
 Current direction:
 
-- Phase 2 is now implemented: ESP32A still sends fragmented JPEG frames by UDP `22345`, but the C++ camera gateway owns UDP receive/reassembly/CRC/timeout/drop-old-frame, then forwards complete JPEG records to Python over local TCP `127.0.0.1:22346`.
+- Phase 2 is now implemented: ESP32A still sends fragmented JPEG frames by UDP `22345`, but the Windows host C++ camera gateway owns UDP receive/reassembly/CRC/timeout/drop-old-frame, then forwards complete JPEG records to Docker Python over mapped TCP `127.0.0.1:22346`.
 - Python remains responsible for AI, frontend, navigation events, TTS, IMU, and fallback camera modes. Python does not bind `22345/udp` when `AIGLASS_CAMERA_SOURCE=cpp_gateway`.
 - Keep ESP32B out of the video-latency work unless IMU/audio issues directly block testing. ESP32A video smoothness is the main target.
 
 Phase 2 implementation details:
 
 - New source file: `backend/cpp_gateway/aiglass_cam_gateway.cpp`.
-- Docker builds it with `g++ -O3 -std=c++17 -Wall -Wextra` into `/usr/local/bin/aiglass_cam_gateway`.
-- Python starts a TCP ingest server first, then launches the gateway subprocess.
+- Docker still builds it with `g++ -O3 -std=c++17 -Wall -Wextra` into `/usr/local/bin/aiglass_cam_gateway` for managed/container fallback.
+- Windows builds the same source with MinGW and `-lws2_32` into ignored local executable `backend\cpp_gateway\aiglass_cam_gateway.exe`.
+- In external mode, Python starts a TCP ingest server only and skips the gateway subprocess. In managed mode, Python starts the TCP server first, then launches the gateway subprocess.
 - C++ gateway stats are merged into `GET /api/camera/stats`; compatible fields include `protocol=cpp_gateway`, `packets`, `completed_frames`, `complete_fps`, `avg_jpeg_bytes`, `stale_chunks`, `duplicate_chunks`, `invalid_packets`, `crc_errors`, `timeouts`, `dropped_incomplete`, `last_frame_age_ms`, and gateway process/connection status.
 - C++ compares frame ids only against the currently assembling frame. It does not permanently reject lower frame ids after a completed frame, so an ESP32A reboot and frame-id reset can recover immediately after any in-flight assembly times out.
 
-Phase 1 validation, do first:
+Historical Phase 1 validation notes:
 
 - Flash the current `esp32_video_mic` firmware to ESP32A and run at least a 60-second live test.
 - In ESP32A serial, capture: `cam_capture_task core=0`, `cam_udp_send_task core=1`, `camera_ctrl connected`, `cap_5s`, `sent_5s`, `drop_5s`, `abort_5s`, `fail_5s`, `avg_jpeg`, `avg_send_ms`, `max_send_ms`, `rssi`, `fps`, and `q`.
@@ -186,7 +188,9 @@ Phase 1 backend refinements, if hardware UDP works but still feels laggy:
 Phase 2 C++ gateway status:
 
 - Implemented on 2026-05-21.
-- Scope remains small: receive ESP32A UDP `22345`, reassemble JPEG with timeout/drop policy, expose stats, and forward complete JPEG frames to Python locally through TCP records.
+- Current default runtime is `external`: Windows host process `backend\cpp_gateway\aiglass_cam_gateway.exe` binds real LAN UDP `0.0.0.0:22345`, then forwards complete JPEG/stats records to Docker Python through mapped TCP `127.0.0.1:22346`.
+- Docker-managed subprocess mode still exists for Linux/container experiments, but it is no longer the preferred Windows hardware path because Docker Desktop UDP `22345` ingress was unreliable while host UDP receive was proven stable.
+- Scope remains small: receive ESP32A UDP `22345`, reassemble JPEG with timeout/drop policy, expose stats, and forward complete JPEG frames to Python through TCP records.
 - It does not include IMU, audio loopback, AV sync, CV prefiltering, or discovery migration.
 
 Do not do yet:
@@ -221,17 +225,29 @@ Do not do yet:
 
 ## Next Suggested Work
 
-1. Hardware-flash ESP32A and run the Phase 1 validation checklist above.
-2. Save one baseline result row for `VGA q=24 fps=10`: serial stats plus `/api/camera/stats`.
-3. If baseline fails, run the tuning matrix in order: `VGA q=28 fps=8`, then `QVGA q=24 fps=10-15`.
-4. If ESP32A serial shows good send stats but backend `/api/camera/stats` does not receive real hardware frames, debug UDP reachability/Docker/Windows mapping before changing AI or frontend code.
-5. If backend stats are healthy but preview still feels laggy, refine viewer backpressure and backend auto-tune before starting the C++ gateway.
-6. Keep checking `backend\.env` uses `AIGLASS_DISCOVERY_HOST=192.168.1.106` or the current PC LAN/Wi-Fi IP before hardware discovery tests.
+1. Keep the current runtime shape for验收: Docker backend plus Windows host `aiglass_cam_gateway.exe`.
+2. If the machine reboots, start Docker first, then run `backend\cpp_gateway\start_host_gateway.ps1 -Hidden`.
+3. Keep `backend\.env` on `AIGLASS_CAMERA_SOURCE=cpp_gateway`, `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, `AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`, and `AIGLASS_DISCOVERY_HOST=192.168.1.106` unless the PC LAN IP changes.
+4. For future polish, package the Windows host gateway script as a Windows service so it survives reboots automatically.
 
 ## Verification Log
 
 2026-05-21:
 
+- External Windows C++ gateway fix completed after discovering Docker Desktop UDP `22345` published port did not deliver real LAN packets reliably to the container. Backend now supports `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, separates TCP bind host (`AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`) from gateway connect host (`AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`), and exposes TCP `22346`.
+- `backend\cpp_gateway\aiglass_cam_gateway.cpp` was ported to compile on both Linux and Windows sockets. Windows build passed with `C:\Users\shiming\mingw64\bin\g++.exe -O3 -std=c++17 -Wall -Wextra backend\cpp_gateway\aiglass_cam_gateway.cpp -lws2_32 -o backend\cpp_gateway\aiglass_cam_gateway.exe`.
+- Added helper scripts `backend\cpp_gateway\build_windows_gateway.ps1` and `backend\cpp_gateway\start_host_gateway.ps1` for repeatable Windows build/start.
+- Docker rebuilt with `docker compose up -d --build`; `python -m py_compile backend\app_main.py` passed; container `aiglass` is healthy and logs show `[CAM GW PY] TCP ingest listening on 0.0.0.0:22346`, `[CAM GW PY] external C++ gateway mode; subprocess launch skipped`, and `source=cpp_gateway`.
+- Temporary Python `UDP->/ws/camera` bridge was stopped. Windows host `aiglass_cam_gateway.exe` now owns UDP `0.0.0.0:22345` and connects to Python over `127.0.0.1:22346`.
+- ESP32A was reset on `COM22` without reflashing. Serial confirmed backend discovery `192.168.1.106:8765`, `camera_ctrl connected`, backend command `target_fps=10`, and stable 5-second windows around `cap_5s=50/51`, `sent_5s=50/51`, `fail_5s=0`, `avg_jpeg≈10.9KB`, `avg_send_ms≈5`, RSSI around `-46` to `-50 dBm`, `fps=10`, `q=28`.
+- Camera profiles now prioritize complete-frame FPS over preview quality: CHAT uses `SET:QUALITY=40`, `SET:FPS=10`; navigation uses `SET:FRAMESIZE=VGA`, `SET:QUALITY=30`, `SET:FPS=10`.
+- Camera auto-tune now has a `35s` warmup on gateway TCP connect and on ESP32A `frame_id` reset, plus stable-window recovery: if `drop_ratio_10s <= 0.05` and `auto_level > 0`, backend reapplies the current mode profile and returns to `auto_level=0`. This prevents transient reboot/navigation drops from leaving A board stuck at `SET:FPS=8` or `SET:QUALITY=30`.
+- Real hardware `/api/camera/stats` sample after the fix: `protocol=cpp_gateway`, `gateway_mode=external`, `gateway_connected=true`, `complete_fps=9.99`, `avg_jpeg_bytes≈10964`, `last_frame_age_ms=3`, `ctrl_clients=1`, `ctrl_last_command=SET:FPS=10`, `invalid_packets=0`, `crc_errors=0`, `timeouts=0` at the sample time.
+- Frontend verification: opened `http://127.0.0.1:8765/?phase2_cpp_gateway=external`; captured a real `/ws/viewer` JPEG frame from the C++ path to `backend\runtime_logs\viewer_cpp_gateway_frame.jpg`.
+- 60-second blind-path test passed through `/api/test/control`: `blind_nav` started, `/ws/nav_events` delivered `47` events including `46` `nav_result` events, `nav_infer_errors=0`, then `stop_nav` returned mode to `CHAT`. End sample showed `protocol=cpp_gateway`, `complete_fps=10.06`, `avg_jpeg_bytes≈13069`, `last_frame_age_ms=23`, `crc_errors=0`, `invalid_packets=0`, and `ctrl_clients=1`.
+- After adding auto-tune recovery, a 30-second navigation regression passed: `/ws/nav_events` delivered `22` events including `21` `nav_result` events, final mode `CHAT`, `nav_infer_errors=0`, `protocol=cpp_gateway`, `gateway_mode=external`, `complete_fps=9.86`, `last_frame_age_ms=0`, `crc_errors=0`, `invalid_packets=0`, `auto_level=0`, `ctrl_last_command=SET:FPS=10`.
+- ESP32B remains muted as intended; `/api/imu/status` during the same test showed `ws_in_packets` increasing and a populated `latest` IMU sample.
+- Final wrap before hardware handoff: backend returned to `CHAT` with no active navigation, `camera_source_name=cpp_gateway`, `gateway_mode=external`, `complete_fps=9.98`, `avg_jpeg_bytes≈11563`, `last_frame_age_ms≈0-81`, `drop_ratio_10s=0.0`, `invalid_packets=0`, `crc_errors=0`, `ctrl_clients=1`, `ctrl_last_command=SET:FPS=10`. ESP32B `/api/imu/status` still had `ws_in_clients=1`, `ws_in_packets=1902`, and populated `latest`; B board speaker remains disabled by `ENABLE_SPEAKER_PLAYBACK=0`.
 - Phase 2 C++ camera gateway implemented and Docker-built successfully. Container logs showed `[CAM GW] UDP listening on 0.0.0.0:22345`, `[CAM GW] connected to python 127.0.0.1:22346`, and `[CAMERA] startup: source=cpp_gateway`.
 - `python -m py_compile backend\app_main.py` passed after the Python gateway integration.
 - `docker compose up -d --build` passed after compiling `/usr/local/bin/aiglass_cam_gateway`.

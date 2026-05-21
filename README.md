@@ -4,7 +4,7 @@
 
 当前黄金基线提交：`998659e`  
 黄金基线时间：`2026-05-20 23:11 Asia/Shanghai`  
-当前 Phase 2 视频网关：C++ `cpp_gateway` 默认启用。
+当前 Phase 2 视频网关：Windows 主机 C++ `cpp_gateway` 默认启用，Docker Python 通过 TCP 接收完整 JPEG。
 提交记录详见：[COMMIT_HISTORY.md](COMMIT_HISTORY.md)
 
 ## 当前状态
@@ -12,9 +12,10 @@
 这版已经在真实硬件上跑通：
 
 - ESP32A 摄像头不再走 WebSocket 大 JPEG 包，而是走 UDP `22345` 分片 JPEG 最新帧流。
-- 默认后端视频入口是 C++ gateway：C++ 监听 UDP `22345`，Python 通过本机 TCP `127.0.0.1:22346` 接收完整最新 JPEG。
+- 默认后端视频入口是 C++ gateway：Windows 主机 C++ 进程监听 UDP `22345`，Docker 内 Python 通过映射 TCP `127.0.0.1:22346` 接收完整最新 JPEG。
 - 浏览器预览走 raw JPEG，导航文字/方向通过 `/ws/nav_events` 叠加到前端透明 canvas。
 - ESP32A 控制走 `/ws/camera_ctrl`，后端可按导航/对话模式下发 FPS、质量、分辨率。
+- CHAT 当前使用 `QUALITY=40 / 10 FPS`，导航档使用 `VGA / QUALITY=30 / 10 FPS`；如果临时降档，稳定后会自动恢复当前模式档位。
 - ESP32B 当前临时关闭扬声器和 `/stream.wav` 拉流，只保留 IMU 上传；恢复时把 `ENABLE_SPEAKER_PLAYBACK` 改回 `1` 后重刷 B 板。
 
 ## 工程结构
@@ -52,8 +53,8 @@
 | `GET /` | 前端调试页面 |
 | `GET /api/health` | 后端健康检查 |
 | `GET /api/camera/stats` | 摄像头 UDP/FPS/丢帧/CRC 统计 |
-| `UDP 22345` | ESP32A 主视频链路，默认由 C++ gateway 重组分片 JPEG |
-| `TCP 127.0.0.1:22346` | 容器内 C++ gateway 到 Python 的完整 JPEG/stats 通道 |
+| `UDP 22345` | ESP32A 主视频链路，当前由 Windows 主机 C++ gateway 重组分片 JPEG |
+| `TCP 127.0.0.1:22346` | Windows C++ gateway 到 Docker Python 的完整 JPEG/stats 通道 |
 | `WebSocket /ws/camera_ctrl` | ESP32A 摄像头控制 |
 | `WebSocket /ws/viewer` | 浏览器预览 JPEG |
 | `WebSocket /ws/nav_events` | 导航结构化事件 |
@@ -84,10 +85,13 @@ DASHSCOPE_API_KEY=你的真实key
 AIGLASS_DISCOVERY_HOST=你的电脑局域网IP
 AIGLASS_CAMERA_SOURCE=cpp_gateway
 AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1
+AIGLASS_CAMERA_CPP_GATEWAY_MODE=external
 AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1
+AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0
 AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346
 AIGLASS_CAMERA_UDP_PORT=22345
 AIGLASS_CAMERA_CTRL_WS_ENABLED=1
+AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=35
 AIGLASS_AUDIO_WS_ENABLED=1
 ```
 
@@ -97,13 +101,26 @@ AIGLASS_AUDIO_WS_ENABLED=1
 docker compose up -d --build
 ```
 
-4. 打开前端：
+4. 启动 Windows 主机 C++ gateway：
+
+```powershell
+cd E:\Desktop\smart_glasses_esp32_workspace\backend
+.\cpp_gateway\start_host_gateway.ps1 -Hidden
+```
+
+如需重新编译 Windows gateway：
+
+```powershell
+.\cpp_gateway\build_windows_gateway.ps1
+```
+
+5. 打开前端：
 
 ```text
 http://127.0.0.1:8765/
 ```
 
-5. 查看关键状态：
+6. 查看关键状态：
 
 ```powershell
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/health
@@ -118,12 +135,14 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/camera/stats
 New-NetFirewallRule -DisplayName 'AIGlass-Camera-22345-UDP-In' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 22345
 ```
 
-同时后端 Docker 需要映射：
+当前外部 C++ gateway 模式下，Docker 需要映射：
 
 - TCP `8765`
+- TCP `22346`
 - UDP `12345`
-- UDP `22345`
 - UDP `54321`
+
+UDP `22345` 由 Windows 主机上的 `aiglass_cam_gateway.exe` 直接绑定。只有切回 Docker 内部 gateway 或 Python UDP fallback 时，才需要让 Docker 接管 UDP `22345`。
 
 ## ESP32A 编译烧录
 
@@ -197,30 +216,33 @@ ESP32A 烧录到 `COM22` 后，串口确认：
 - 平均 JPEG: 约 `12KB-16KB`
 - RSSI: 约 `-47` 到 `-53 dBm`
 
-后端 `/api/camera/stats` 真实硬件样本：
+当前 Phase 2 外部 C++ gateway 真实硬件样本：
 
 ```json
 {
-  "protocol": "udp",
-  "completed_frames": 1002,
-  "complete_fps": 7.01,
-  "last_frame_age_ms": 154,
-  "camera_source_name": "esp32_udp",
+  "protocol": "cpp_gateway",
+  "gateway_mode": "external",
+  "gateway_connected": true,
+  "complete_fps": 9.99,
+  "avg_jpeg_bytes": 10964,
+  "last_frame_age_ms": 3,
+  "camera_source_name": "cpp_gateway",
+  "ctrl_clients": 1,
+  "ctrl_last_command": "SET:FPS=10",
   "invalid_packets": 0,
   "crc_errors": 0
 }
 ```
 
-Phase 2 本地网关注入样本：
+60 秒盲道导航闭环样本：
 
 ```json
 {
-  "protocol": "cpp_gateway",
-  "gateway_connected": true,
-  "gateway_process_running": true,
-  "completed_frames": 12,
-  "invalid_packets": 0,
-  "crc_errors": 0
+  "nav_events": 47,
+  "nav_result": 46,
+  "nav_infer_errors": 0,
+  "stop_mode": "CHAT",
+  "complete_fps": 10.06
 }
 ```
 
@@ -230,6 +252,7 @@ Phase 2 本地网关注入样本：
 
 ```dotenv
 AIGLASS_CAMERA_SOURCE=cpp_gateway
+AIGLASS_CAMERA_CPP_GATEWAY_MODE=external
 ```
 
 如果 C++ gateway 出问题，可以临时切回 Python UDP 重组：

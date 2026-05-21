@@ -1,0 +1,4 @@
+services:
+  aiglass:
+    ports:
+      - "${AIGLASS_CAMERA_UDP_PORT:-22345}:${AIGLASS_CAMERA_UDP_PORT:-22345}/udp"

@@ -1,17 +1,28 @@
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#else
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <iomanip>
 #include <iostream>
@@ -20,10 +31,24 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
+
+#ifdef _WIN32
+using Socket = SOCKET;
+using SockLen = int;
+constexpr Socket kInvalidSocket = INVALID_SOCKET;
+#else
+using Socket = int;
+using SockLen = socklen_t;
+constexpr Socket kInvalidSocket = -1;
+#endif
 
 constexpr uint32_t kCamMagic = 0x43474941;     // "AIGC" little-endian
 constexpr uint8_t kCamVersion = 1;
@@ -66,6 +91,140 @@ struct GatewayRecordHeader {
 
 static_assert(sizeof(CamUdpHeader) == 32, "CamUdpHeader must stay 32 bytes");
 static_assert(sizeof(GatewayRecordHeader) == 32, "GatewayRecordHeader must stay 32 bytes");
+
+bool socket_valid(Socket fd) {
+    return fd != kInvalidSocket;
+}
+
+int socket_last_error() {
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+bool socket_error_would_block(int err) {
+#ifdef _WIN32
+    return err == WSAEWOULDBLOCK;
+#else
+    return err == EAGAIN || err == EWOULDBLOCK;
+#endif
+}
+
+bool socket_error_interrupted(int err) {
+#ifdef _WIN32
+    return err == WSAEINTR;
+#else
+    return err == EINTR;
+#endif
+}
+
+std::string socket_error_string(int err) {
+#ifdef _WIN32
+    char* message = nullptr;
+    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD len = FormatMessageA(
+        flags,
+        nullptr,
+        static_cast<DWORD>(err),
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<LPSTR>(&message),
+        0,
+        nullptr
+    );
+    if (len == 0 || message == nullptr) {
+        return "winsock_error_" + std::to_string(err);
+    }
+    std::string text(message, len);
+    LocalFree(message);
+    while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == '.')) {
+        text.pop_back();
+    }
+    return text + " (" + std::to_string(err) + ")";
+#else
+    return std::string(strerror(err));
+#endif
+}
+
+std::string gai_error_string(int err) {
+#ifdef _WIN32
+    return "getaddrinfo_error_" + std::to_string(err);
+#else
+    return std::string(gai_strerror(err));
+#endif
+}
+
+void close_socket(Socket fd) {
+    if (!socket_valid(fd)) {
+        return;
+    }
+#ifdef _WIN32
+    closesocket(fd);
+#else
+    close(fd);
+#endif
+}
+
+bool set_nonblocking(Socket fd) {
+#ifdef _WIN32
+    u_long mode = 1;
+    return ioctlsocket(fd, FIONBIO, &mode) == 0;
+#else
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        return false;
+    }
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
+void set_send_timeout(Socket fd, int timeout_ms) {
+#ifdef _WIN32
+    DWORD timeout = static_cast<DWORD>(timeout_ms);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    timeval timeout{};
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+}
+
+int wait_readable(Socket fd, int timeout_ms) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(fd, &readfds);
+    timeval timeout{};
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
+#ifdef _WIN32
+    return select(0, &readfds, nullptr, nullptr, &timeout);
+#else
+    return select(fd + 1, &readfds, nullptr, nullptr, &timeout);
+#endif
+}
+
+struct SocketRuntime {
+    SocketRuntime() {
+#ifdef _WIN32
+        WSADATA data{};
+        ready = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+#else
+        ready = true;
+#endif
+    }
+
+    ~SocketRuntime() {
+#ifdef _WIN32
+        if (ready) {
+            WSACleanup();
+        }
+#endif
+    }
+
+    bool ready = false;
+};
 
 int env_int(const char* name, int default_value, int min_value, int max_value) {
     const char* raw = std::getenv(name);
@@ -179,7 +338,7 @@ struct GatewayState {
     int ttl_ms = 250;
     int max_frame_bytes = 512 * 1024;
     std::string tcp_host = "127.0.0.1";
-    int tcp_fd = -1;
+    Socket tcp_fd = kInvalidSocket;
     TimePoint next_tcp_attempt{};
     std::unordered_map<uint8_t, Assembly> assemblies;
     Stats stats;
@@ -240,15 +399,15 @@ double drop_ratio_10s(Stats& stats, TimePoint now) {
 }
 
 void close_tcp(GatewayState& state) {
-    if (state.tcp_fd >= 0) {
-        close(state.tcp_fd);
-        state.tcp_fd = -1;
+    if (socket_valid(state.tcp_fd)) {
+        close_socket(state.tcp_fd);
+        state.tcp_fd = kInvalidSocket;
     }
 }
 
 bool connect_tcp(GatewayState& state) {
     TimePoint now = Clock::now();
-    if (state.tcp_fd >= 0) {
+    if (socket_valid(state.tcp_fd)) {
         return true;
     }
     if (state.next_tcp_attempt.time_since_epoch().count() != 0 && now < state.next_tcp_attempt) {
@@ -263,28 +422,26 @@ bool connect_tcp(GatewayState& state) {
     const std::string port_text = std::to_string(state.tcp_port);
     int rc = getaddrinfo(state.tcp_host.c_str(), port_text.c_str(), &hints, &result);
     if (rc != 0) {
-        std::cerr << "[CAM GW] python resolve failed: " << gai_strerror(rc) << std::endl;
+        std::cerr << "[CAM GW] python resolve failed: " << gai_error_string(rc) << std::endl;
         return false;
     }
 
-    int fd = -1;
+    Socket fd = kInvalidSocket;
     for (addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) {
+        if (!socket_valid(fd)) {
             continue;
         }
-        timeval timeout{};
-        timeout.tv_sec = 1;
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        set_send_timeout(fd, 1000);
         if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
             break;
         }
-        close(fd);
-        fd = -1;
+        close_socket(fd);
+        fd = kInvalidSocket;
     }
     freeaddrinfo(result);
 
-    if (fd < 0) {
+    if (!socket_valid(fd)) {
         return false;
     }
 
@@ -293,12 +450,15 @@ bool connect_tcp(GatewayState& state) {
     return true;
 }
 
-bool send_all(int fd, const uint8_t* data, size_t len) {
+bool send_all(Socket fd, const uint8_t* data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = send(fd, data + sent, len - sent, MSG_NOSIGNAL);
+        const size_t remaining = len - sent;
+        const int chunk = static_cast<int>(std::min<size_t>(remaining, 64 * 1024));
+        auto n = send(fd, reinterpret_cast<const char*>(data + sent), chunk, MSG_NOSIGNAL);
         if (n < 0) {
-            if (errno == EINTR) {
+            const int err = socket_last_error();
+            if (socket_error_interrupted(err)) {
                 continue;
             }
             return false;
@@ -530,29 +690,30 @@ void handle_udp_packet(GatewayState& state, const uint8_t* data, size_t len, con
     complete_assembly(state, complete);
 }
 
-int create_udp_socket(int port) {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        std::cerr << "[CAM GW] UDP socket failed: " << strerror(errno) << std::endl;
-        return -1;
+Socket create_udp_socket(int port) {
+    Socket fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (!socket_valid(fd)) {
+        std::cerr << "[CAM GW] UDP socket failed: " << socket_error_string(socket_last_error()) << std::endl;
+        return kInvalidSocket;
     }
 
     int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(static_cast<uint16_t>(port));
     if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        std::cerr << "[CAM GW] UDP bind failed on " << port << ": " << strerror(errno) << std::endl;
-        close(fd);
-        return -1;
+        std::cerr << "[CAM GW] UDP bind failed on " << port << ": "
+                  << socket_error_string(socket_last_error()) << std::endl;
+        close_socket(fd);
+        return kInvalidSocket;
     }
 
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (!set_nonblocking(fd)) {
+        std::cerr << "[CAM GW] UDP nonblocking setup failed: "
+                  << socket_error_string(socket_last_error()) << std::endl;
     }
     std::cout << "[CAM GW] UDP listening on 0.0.0.0:" << port << std::endl;
     return fd;
@@ -561,6 +722,12 @@ int create_udp_socket(int port) {
 } // namespace
 
 int main() {
+    SocketRuntime socket_runtime;
+    if (!socket_runtime.ready) {
+        std::cerr << "[CAM GW] socket runtime init failed" << std::endl;
+        return 2;
+    }
+
     GatewayState state;
     state.udp_port = env_int("AIGLASS_CAMERA_UDP_PORT", 22345, 1, 65535);
     state.ttl_ms = env_int("AIGLASS_CAMERA_UDP_FRAME_TTL_MS", 250, 50, 5000);
@@ -568,8 +735,8 @@ int main() {
     state.tcp_host = env_string("AIGLASS_CAMERA_GATEWAY_TCP_HOST", "127.0.0.1");
     state.tcp_port = env_int("AIGLASS_CAMERA_GATEWAY_TCP_PORT", 22346, 1, 65535);
 
-    int udp_fd = create_udp_socket(state.udp_port);
-    if (udp_fd < 0) {
+    Socket udp_fd = create_udp_socket(state.udp_port);
+    if (!socket_valid(udp_fd)) {
         return 2;
     }
 
@@ -579,30 +746,28 @@ int main() {
     while (true) {
         connect_tcp(state);
 
-        pollfd pfd{};
-        pfd.fd = udp_fd;
-        pfd.events = POLLIN;
-        int rc = poll(&pfd, 1, 20);
-        if (rc > 0 && (pfd.revents & POLLIN)) {
+        int rc = wait_readable(udp_fd, 20);
+        if (rc > 0) {
             while (true) {
                 sockaddr_in from{};
-                socklen_t from_len = sizeof(from);
-                ssize_t n = recvfrom(
+                SockLen from_len = sizeof(from);
+                auto n = recvfrom(
                     udp_fd,
-                    buffer.data(),
-                    buffer.size(),
+                    reinterpret_cast<char*>(buffer.data()),
+                    static_cast<int>(buffer.size()),
                     0,
                     reinterpret_cast<sockaddr*>(&from),
                     &from_len
                 );
                 if (n < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    const int err = socket_last_error();
+                    if (socket_error_would_block(err)) {
                         break;
                     }
-                    if (errno == EINTR) {
+                    if (socket_error_interrupted(err)) {
                         continue;
                     }
-                    std::cerr << "[CAM GW] recvfrom failed: " << strerror(errno) << std::endl;
+                    std::cerr << "[CAM GW] recvfrom failed: " << socket_error_string(err) << std::endl;
                     break;
                 }
                 if (n > 0) {
@@ -619,6 +784,6 @@ int main() {
     }
 
     close_tcp(state);
-    close(udp_fd);
+    close_socket(udp_fd);
     return 0;
 }

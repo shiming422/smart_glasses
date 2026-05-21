@@ -30,6 +30,7 @@ backend/model/
 backend/mobileclip_blt.ts
 backend/runtime_logs/
 backend/recordings/
+backend/cpp_gateway/*.exe
 
 # Firmware private local config
 esp32_video_mic/main/inc/secrets.h

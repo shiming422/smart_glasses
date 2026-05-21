@@ -129,9 +129,32 @@ CAMERA_UDP_FRAME_TTL_MS = max(50, _env_int("AIGLASS_CAMERA_UDP_FRAME_TTL_MS", 25
 CAMERA_UDP_MAX_FRAME_BYTES = max(65536, _env_int("AIGLASS_CAMERA_UDP_MAX_FRAME_BYTES", 512 * 1024))
 CAMERA_CTRL_WS_ENABLED = _env_flag("AIGLASS_CAMERA_CTRL_WS_ENABLED", True)
 CAMERA_CPP_GATEWAY_ENABLED = _env_flag("AIGLASS_CAMERA_CPP_GATEWAY_ENABLED", True)
+
+
+def _normalize_camera_gateway_mode(raw: str) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"external", "host", "host_external", "windows"}:
+        return "external"
+    if value in {"managed", "internal", "docker", "subprocess"}:
+        return "managed"
+    managed_raw = os.getenv("AIGLASS_CAMERA_CPP_GATEWAY_MANAGED")
+    if managed_raw is not None:
+        return "managed" if _env_flag("AIGLASS_CAMERA_CPP_GATEWAY_MANAGED", True) else "external"
+    return "managed"
+
+
+CAMERA_CPP_GATEWAY_MODE = _normalize_camera_gateway_mode(
+    os.getenv("AIGLASS_CAMERA_CPP_GATEWAY_MODE", "")
+)
 CAMERA_GATEWAY_TCP_HOST = os.getenv("AIGLASS_CAMERA_GATEWAY_TCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+_gateway_bind_default = "0.0.0.0" if CAMERA_CPP_GATEWAY_MODE == "external" else CAMERA_GATEWAY_TCP_HOST
+CAMERA_GATEWAY_TCP_BIND_HOST = (
+    os.getenv("AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST", _gateway_bind_default).strip()
+    or _gateway_bind_default
+)
 CAMERA_GATEWAY_TCP_PORT = max(1, min(65535, _env_int("AIGLASS_CAMERA_GATEWAY_TCP_PORT", 22346)))
 CAMERA_GATEWAY_BIN = os.getenv("AIGLASS_CAMERA_GATEWAY_BIN", "").strip()
+CAMERA_AUTOTUNE_WARMUP_SEC = max(0.0, _env_float("AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC", 35.0))
 CAMERA_SOURCE_DEFAULT = os.getenv("AIGLASS_CAMERA_SOURCE", "cpp_gateway").strip().lower()
 RECORD_FRAME_FPS = max(1, _env_int("AIGLASS_RECORD_FRAME_FPS", 10))
 AUTO_RECORD_ENABLED = _env_flag("AIGLASS_AUTO_RECORD", False)
@@ -173,7 +196,10 @@ print(
     f"path_frame_div={PATH_FRAME_DIV}, traffic_frame_div={TRAFFIC_FRAME_DIV}, "
     f"nav_viewer_frame_div={NAV_VIEWER_FRAME_DIV}, nav_raw_between_overlays={NAV_RAW_BETWEEN_OVERLAYS}, "
     f"camera_udp_port={CAMERA_UDP_PORT}, camera_udp_ttl_ms={CAMERA_UDP_FRAME_TTL_MS}, "
-    f"cpp_gateway={CAMERA_CPP_GATEWAY_ENABLED}@{CAMERA_GATEWAY_TCP_HOST}:{CAMERA_GATEWAY_TCP_PORT}, "
+    f"cpp_gateway={CAMERA_CPP_GATEWAY_ENABLED}/{CAMERA_CPP_GATEWAY_MODE}"
+    f"@{CAMERA_GATEWAY_TCP_HOST}:{CAMERA_GATEWAY_TCP_PORT}, "
+    f"gateway_bind={CAMERA_GATEWAY_TCP_BIND_HOST}:{CAMERA_GATEWAY_TCP_PORT}, "
+    f"autotune_warmup_sec={CAMERA_AUTOTUNE_WARMUP_SEC}, "
     f"record_fps={RECORD_FRAME_FPS}, "
     f"auto_record={AUTO_RECORD_ENABLED}, nav_direct_viewer={NAV_DIRECT_VIEWER_ENABLED}, "
     f"handover_stale_sec={CAMERA_WS_HANDOVER_STALE_SEC}",
@@ -475,6 +501,8 @@ camera_gateway_client_counter: int = 0
 camera_gateway_active_client_id: int = 0
 camera_gateway_last_record_monotonic: float = 0.0
 camera_gateway_last_jpeg_monotonic: float = 0.0
+camera_gateway_connected_since_monotonic: float = 0.0
+camera_gateway_autotune_warm_until_monotonic: float = 0.0
 camera_gateway_last_error: str = ""
 camera_ctrl_clients: Set[WebSocket] = set()
 camera_ctrl_last_command: str = ""
@@ -572,9 +600,9 @@ def _camera_profile_for_state(state: Optional[str]) -> List[str]:
         "TRAFFIC_LIGHT_DETECTION",
     }
     if state in nav_states:
-        return ["SET:FRAMESIZE=VGA", "SET:QUALITY=24", "SET:FPS=10"]
+        return ["SET:FRAMESIZE=VGA", "SET:QUALITY=30", "SET:FPS=10"]
     if state in {None, "CHAT", "IDLE"}:
-        return ["SET:QUALITY=28", "SET:FPS=6"]
+        return ["SET:QUALITY=40", "SET:FPS=10"]
     return []
 
 
@@ -615,15 +643,22 @@ async def _camera_udp_maybe_autotune() -> None:
     camera_udp_auto_last_check_monotonic = now
 
     ratio = _camera_udp_drop_ratio(now)
+    if ratio <= 0.05:
+        if camera_udp_auto_level > 0:
+            camera_udp_auto_level = 0
+            state = orchestrator.get_state() if orchestrator else "CHAT"
+            await _apply_camera_profile_for_state(state, reason=f"udp_recover_drop_ratio={ratio:.2f}")
+        return
+
     if ratio <= 0.15:
         return
 
     if camera_udp_auto_level < 1:
         camera_udp_auto_level = 1
-        await _camera_ctrl_send_text("SET:FPS=8", reason=f"udp_drop_ratio={ratio:.2f}")
-    else:
+        await _camera_ctrl_send_text("SET:QUALITY=40", reason=f"udp_drop_ratio={ratio:.2f}")
+    elif camera_udp_auto_level < 2:
         camera_udp_auto_level = 2
-        await _camera_ctrl_send_text("SET:QUALITY=30", reason=f"udp_drop_ratio={ratio:.2f}")
+        await _camera_ctrl_send_text("SET:FPS=8", reason=f"udp_drop_ratio={ratio:.2f}")
 
 
 async def nav_event_broadcast(payload: Dict[str, Any]) -> None:
@@ -814,26 +849,52 @@ async def _camera_gateway_maybe_autotune() -> None:
     global camera_udp_auto_level, camera_udp_auto_last_check_monotonic
 
     now = time.monotonic()
+    if camera_gateway_autotune_warm_until_monotonic > now:
+        return
     if now - camera_udp_auto_last_check_monotonic < 10.0:
         return
     camera_udp_auto_last_check_monotonic = now
 
     ratio = _camera_gateway_stat_number("drop_ratio_10s", 0.0)
+    if ratio <= 0.05:
+        if camera_udp_auto_level > 0:
+            camera_udp_auto_level = 0
+            state = orchestrator.get_state() if orchestrator else "CHAT"
+            await _apply_camera_profile_for_state(state, reason=f"cpp_gateway_recover_drop_ratio={ratio:.2f}")
+        return
+
     if ratio <= 0.15:
         return
 
     if camera_udp_auto_level < 1:
         camera_udp_auto_level = 1
-        await _camera_ctrl_send_text("SET:FPS=8", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
-    else:
+        await _camera_ctrl_send_text("SET:QUALITY=40", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
+    elif camera_udp_auto_level < 2:
         camera_udp_auto_level = 2
-        await _camera_ctrl_send_text("SET:QUALITY=30", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
+        await _camera_ctrl_send_text("SET:FPS=8", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
 
 
 async def _handle_camera_gateway_jpeg(payload: bytes, frame_id: int, timestamp_ms: int) -> None:
-    global camera_gateway_last_jpeg_monotonic
+    global camera_gateway_last_jpeg_monotonic, camera_gateway_autotune_warm_until_monotonic
+    global camera_udp_auto_level
 
     camera_gateway_last_jpeg_monotonic = time.monotonic()
+    previous_frame_id = int(_camera_gateway_stat_number("last_frame_id", 0))
+    if (
+        CAMERA_AUTOTUNE_WARMUP_SEC > 0.0
+        and previous_frame_id > 100
+        and frame_id + 100 < previous_frame_id
+    ):
+        camera_gateway_autotune_warm_until_monotonic = max(
+            camera_gateway_autotune_warm_until_monotonic,
+            camera_gateway_last_jpeg_monotonic + CAMERA_AUTOTUNE_WARMUP_SEC,
+        )
+        camera_udp_auto_level = 0
+        print(
+            f"[CAM GW PY] frame id reset detected {previous_frame_id}->{frame_id}; "
+            f"autotune warmup {CAMERA_AUTOTUNE_WARMUP_SEC:.1f}s",
+            flush=True,
+        )
     camera_gateway_stats["last_frame_id"] = frame_id
     camera_gateway_stats["last_timestamp_ms"] = timestamp_ms
     camera_gateway_stats["last_frame_len"] = len(payload)
@@ -857,7 +918,8 @@ async def _handle_camera_gateway_stats(payload: bytes) -> None:
 
 async def _handle_camera_gateway_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     global camera_gateway_connected, camera_gateway_client_counter, camera_gateway_active_client_id
-    global camera_gateway_last_record_monotonic, camera_gateway_last_error
+    global camera_gateway_last_record_monotonic, camera_gateway_connected_since_monotonic
+    global camera_gateway_autotune_warm_until_monotonic, camera_gateway_last_error
 
     camera_gateway_client_counter += 1
     client_id = camera_gateway_client_counter
@@ -865,6 +927,11 @@ async def _handle_camera_gateway_client(reader: asyncio.StreamReader, writer: as
     camera_gateway_connected = True
     camera_gateway_last_error = ""
     camera_gateway_last_record_monotonic = time.monotonic()
+    camera_gateway_connected_since_monotonic = camera_gateway_last_record_monotonic
+    camera_gateway_autotune_warm_until_monotonic = max(
+        camera_gateway_autotune_warm_until_monotonic,
+        camera_gateway_connected_since_monotonic + CAMERA_AUTOTUNE_WARMUP_SEC,
+    )
     peer = writer.get_extra_info("peername")
     print(f"[CAM GW PY] gateway connected: {peer}", flush=True)
     try:
@@ -917,6 +984,8 @@ async def _handle_camera_gateway_client(reader: asyncio.StreamReader, writer: as
         if camera_gateway_active_client_id == client_id:
             camera_gateway_connected = False
             camera_gateway_active_client_id = 0
+            camera_gateway_connected_since_monotonic = 0.0
+            camera_gateway_autotune_warm_until_monotonic = 0.0
         try:
             writer.close()
             await writer.wait_closed()
@@ -932,11 +1001,11 @@ async def _start_camera_gateway_server() -> None:
         return
     camera_gateway_server = await asyncio.start_server(
         _handle_camera_gateway_client,
-        host=CAMERA_GATEWAY_TCP_HOST,
+        host=CAMERA_GATEWAY_TCP_BIND_HOST,
         port=CAMERA_GATEWAY_TCP_PORT,
     )
     print(
-        f"[CAM GW PY] TCP ingest listening on {CAMERA_GATEWAY_TCP_HOST}:{CAMERA_GATEWAY_TCP_PORT}",
+        f"[CAM GW PY] TCP ingest listening on {CAMERA_GATEWAY_TCP_BIND_HOST}:{CAMERA_GATEWAY_TCP_PORT}",
         flush=True,
     )
 
@@ -944,6 +1013,9 @@ async def _start_camera_gateway_server() -> None:
 def _start_camera_gateway_process() -> None:
     global camera_gateway_process
 
+    if CAMERA_CPP_GATEWAY_MODE == "external":
+        print("[CAM GW PY] external C++ gateway mode; subprocess launch skipped", flush=True)
+        return
     if not CAMERA_CPP_GATEWAY_ENABLED:
         print("[CAM GW PY] C++ gateway disabled by AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=0", flush=True)
         return
@@ -984,6 +1056,7 @@ async def _stop_camera_gateway_process() -> None:
 
 async def _stop_camera_gateway_server() -> None:
     global camera_gateway_server, camera_gateway_connected, camera_gateway_active_client_id
+    global camera_gateway_connected_since_monotonic, camera_gateway_autotune_warm_until_monotonic
 
     if camera_gateway_server is not None:
         camera_gateway_server.close()
@@ -991,6 +1064,8 @@ async def _stop_camera_gateway_server() -> None:
         camera_gateway_server = None
     camera_gateway_connected = False
     camera_gateway_active_client_id = 0
+    camera_gateway_connected_since_monotonic = 0.0
+    camera_gateway_autotune_warm_until_monotonic = 0.0
 
 # 【新增】模型加载函数
 def load_navigation_models():
@@ -1886,15 +1961,30 @@ def camera_stats():
             if camera_gateway_last_record_monotonic <= 0.0
             else int((now - camera_gateway_last_record_monotonic) * 1000.0)
         )
+        gateway_connected_age_ms = (
+            None
+            if camera_gateway_connected_since_monotonic <= 0.0
+            else int((now - camera_gateway_connected_since_monotonic) * 1000.0)
+        )
+        autotune_warmup_remaining_ms = max(
+            0,
+            int((camera_gateway_autotune_warm_until_monotonic - now) * 1000.0),
+        )
         return {
             "protocol": "cpp_gateway",
             "udp_port": CAMERA_UDP_PORT,
             "udp_frame_ttl_ms": CAMERA_UDP_FRAME_TTL_MS,
             "udp_max_frame_bytes": CAMERA_UDP_MAX_FRAME_BYTES,
+            "gateway_mode": CAMERA_CPP_GATEWAY_MODE,
             "gateway_tcp_host": CAMERA_GATEWAY_TCP_HOST,
+            "gateway_tcp_bind_host": CAMERA_GATEWAY_TCP_BIND_HOST,
             "gateway_tcp_port": CAMERA_GATEWAY_TCP_PORT,
             "gateway_enabled": CAMERA_CPP_GATEWAY_ENABLED,
+            "gateway_managed_process": CAMERA_CPP_GATEWAY_MODE == "managed",
             "gateway_connected": camera_gateway_connected,
+            "gateway_connected_age_ms": gateway_connected_age_ms,
+            "autotune_warmup_sec": CAMERA_AUTOTUNE_WARMUP_SEC,
+            "autotune_warmup_remaining_ms": autotune_warmup_remaining_ms,
             "gateway_process_running": bool(
                 camera_gateway_process is not None and camera_gateway_process.poll() is None
             ),
@@ -3207,8 +3297,7 @@ async def ws_camera_ctrl(ws: WebSocket):
     print(f"[CAM CTRL] device connected: {client}", flush=True)
     try:
         state = orchestrator.get_state() if orchestrator else "CHAT"
-        for cmd in _camera_profile_for_state(state):
-            await ws.send_text(cmd)
+        await _apply_camera_profile_for_state(state, reason="camera_ctrl_connect")
         while True:
             message = await ws.receive()
             if message.get("type") == "websocket.disconnect":
@@ -3617,7 +3706,9 @@ async def on_startup():
         )
     print(
         f"[CAMERA] startup: source={camera_source_key}, UDP port={CAMERA_UDP_PORT}, "
+        f"gateway_mode={CAMERA_CPP_GATEWAY_MODE}, "
         f"gateway_tcp={CAMERA_GATEWAY_TCP_HOST}:{CAMERA_GATEWAY_TCP_PORT}, "
+        f"gateway_bind={CAMERA_GATEWAY_TCP_BIND_HOST}:{CAMERA_GATEWAY_TCP_PORT}, "
         "WebSocket /ws/camera kept as fallback",
         flush=True,
     )

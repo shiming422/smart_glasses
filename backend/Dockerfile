@@ -56,7 +56,7 @@ RUN g++ -O3 -std=c++17 -Wall -Wextra \
 
 RUN mkdir -p recordings model music voice static templates runtime_logs
 
-EXPOSE 8765/tcp 12345/udp 22345/udp 54321/udp
+EXPOSE 8765/tcp 22346/tcp 12345/udp 22345/udp 54321/udp
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f "http://localhost:${AIGLASS_PORT:-8765}/api/health" || exit 1
