@@ -23,12 +23,14 @@
 
 // 其他配置
 #define BUTTON_GPIO         0
-#define CAMERA_JPEG_QUAL    24
-#define CAMERA_FRAME_SIZE   FRAMESIZE_VGA
+#define CAMERA_XCLK_FREQ_HZ 20000000
+#define CAMERA_JPEG_QUAL    20
+#define CAMERA_FRAME_SIZE   FRAMESIZE_QVGA
 #define AI_TASK_STACK_SIZE  (1024 * 16)
 
 // Board role: video + microphone uplink.
 // Audio playback and IMU live on the separate esp32_audio_imu firmware.
+#define APP_MIC_UPLINK_ENABLE 0
 
 // Backend config. The host is discovered at runtime via UDP broadcast.
 #define APP_SERVER_PORT     8765

@@ -79,7 +79,9 @@ static volatile uint32_t s_udp_send_fail_count = 0;
 static volatile uint32_t s_queue_drop_count = 0;
 static volatile uint32_t s_abort_old_frame_count = 0;
 static volatile uint64_t s_total_jpeg_bytes = 0;
+static volatile uint64_t s_total_capture_us = 0;
 static volatile uint64_t s_total_send_us = 0;
+static volatile uint32_t s_max_capture_us = 0;
 static volatile uint32_t s_max_send_us = 0;
 static int s_capture_core = -1;
 static int s_udp_core = -1;
@@ -189,7 +191,16 @@ static framesize_t parse_framesize(const char *v) {
     if (!v) {
         return s_frame_size;
     }
+    if (strcmp(v, "96X96") == 0) return FRAMESIZE_96X96;
+    if (strcmp(v, "QQVGA") == 0) return FRAMESIZE_QQVGA;
+    if (strcmp(v, "128X128") == 0) return FRAMESIZE_128X128;
+    if (strcmp(v, "QCIF") == 0) return FRAMESIZE_QCIF;
+    if (strcmp(v, "HQVGA") == 0) return FRAMESIZE_HQVGA;
+    if (strcmp(v, "240X240") == 0) return FRAMESIZE_240X240;
     if (strcmp(v, "QVGA") == 0) return FRAMESIZE_QVGA;
+    if (strcmp(v, "320X320") == 0) return FRAMESIZE_320X320;
+    if (strcmp(v, "CIF") == 0) return FRAMESIZE_CIF;
+    if (strcmp(v, "HVGA") == 0) return FRAMESIZE_HVGA;
     if (strcmp(v, "VGA") == 0) return FRAMESIZE_VGA;
     if (strcmp(v, "SVGA") == 0) return FRAMESIZE_SVGA;
     if (strcmp(v, "XGA") == 0) return FRAMESIZE_XGA;
@@ -270,7 +281,9 @@ static void cam_capture_task(void *arg) {
             last_tick = xTaskGetTickCount();
         }
 
+        int64_t capture_start_us = esp_timer_get_time();
         camera_fb_t *fb = esp_camera_fb_get();
+        uint32_t capture_us = (uint32_t)(esp_timer_get_time() - capture_start_us);
         if (!fb) {
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
@@ -282,6 +295,10 @@ static void cam_capture_task(void *arg) {
 
         update_latest_jpeg(fb->buf, fb->len);
         s_capture_count++;
+        s_total_capture_us += capture_us;
+        if (capture_us > s_max_capture_us) {
+            s_max_capture_us = capture_us;
+        }
         enqueue_frame(fb);
     }
 }
@@ -385,6 +402,7 @@ static void maybe_log_cam_stats(void) {
     static uint32_t last_abort = 0;
     static uint32_t last_fail = 0;
     static uint64_t last_bytes = 0;
+    static uint64_t last_capture_us = 0;
     static uint64_t last_send_us = 0;
 
     int64_t now_us = esp_timer_get_time();
@@ -398,10 +416,13 @@ static void maybe_log_cam_stats(void) {
     uint32_t aborts = s_abort_old_frame_count;
     uint32_t fail = s_udp_send_fail_count;
     uint64_t bytes = s_total_jpeg_bytes;
+    uint64_t capture_us = s_total_capture_us;
     uint64_t send_us = s_total_send_us;
 
+    uint32_t cap_delta = cap - last_cap;
     uint32_t sent_delta = sent - last_sent;
     uint32_t avg_jpeg = sent_delta ? (uint32_t)((bytes - last_bytes) / sent_delta) : 0;
+    uint32_t avg_cap_ms = cap_delta ? (uint32_t)(((capture_us - last_capture_us) / cap_delta) / 1000) : 0;
     uint32_t avg_send_ms = sent_delta ? (uint32_t)(((send_us - last_send_us) / sent_delta) / 1000) : 0;
 
     wifi_ap_record_t ap = {0};
@@ -414,13 +435,16 @@ static void maybe_log_cam_stats(void) {
         TAG,
         "stats cap_5s=%" PRIu32 " sent_5s=%" PRIu32 " drop_5s=%" PRIu32
         " abort_5s=%" PRIu32 " fail_5s=%" PRIu32 " avg_jpeg=%" PRIu32
+        " avg_cap_ms=%" PRIu32 " max_cap_ms=%" PRIu32
         " avg_send_ms=%" PRIu32 " max_send_ms=%" PRIu32 " rssi=%d fps=%d q=%d cores cap=%d udp=%d ctrl=%d",
-        cap - last_cap,
+        cap_delta,
         sent_delta,
         drop - last_drop,
         aborts - last_abort,
         fail - last_fail,
         avg_jpeg,
+        avg_cap_ms,
+        s_max_capture_us / 1000,
         avg_send_ms,
         s_max_send_us / 1000,
         rssi,
@@ -437,7 +461,9 @@ static void maybe_log_cam_stats(void) {
     last_abort = aborts;
     last_fail = fail;
     last_bytes = bytes;
+    last_capture_us = capture_us;
     last_send_us = send_us;
+    s_max_capture_us = 0;
     s_max_send_us = 0;
 }
 

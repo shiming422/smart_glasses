@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 
+#include "sys_config.h"
 #include "app_wifi.h"
 #include "app_backend.h"
 #include "app_camera.h"
@@ -23,11 +24,15 @@ void app_main(void) {
     app_wifi_init();
     ESP_ERROR_CHECK(app_backend_discovery_start());
 
-    // Board A role: camera JPEG uplink + microphone PCM uplink only.
+    // Board A role: camera JPEG uplink; microphone can be disabled for video-only tuning.
     ESP_ERROR_CHECK(app_stream_cam_init());
+#if APP_MIC_UPLINK_ENABLE
     ESP_ERROR_CHECK(app_stream_audio_init());
+#else
+    ESP_LOGI(TAG, "Microphone uplink disabled (APP_MIC_UPLINK_ENABLE=0)");
+#endif
 
-    ESP_LOGI(TAG, "Video+mic board ready");
+    ESP_LOGI(TAG, "Video board ready");
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }

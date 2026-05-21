@@ -528,6 +528,7 @@ camera_ctrl_last_command: str = ""
 camera_ctrl_last_sent_monotonic: float = 0.0
 camera_udp_auto_level: int = 0
 camera_udp_auto_last_check_monotonic: float = 0.0
+camera_udp_autotune_warm_until_monotonic: float = 0.0
 nav_event_clients: Set[WebSocket] = set()
 
 # 【新增】盲道导航相关全局变量
@@ -665,6 +666,8 @@ async def _camera_udp_maybe_autotune() -> None:
     global camera_udp_auto_level, camera_udp_auto_last_check_monotonic
 
     now = time.monotonic()
+    if camera_udp_autotune_warm_until_monotonic > now:
+        return
     if now - camera_udp_auto_last_check_monotonic < 10.0:
         return
     camera_udp_auto_last_check_monotonic = now
@@ -817,6 +820,8 @@ def _camera_udp_clear_stale(now: Optional[float] = None) -> None:
 
 
 def _handle_camera_udp_datagram(data: bytes, addr: Tuple[str, int]) -> None:
+    global camera_udp_autotune_warm_until_monotonic, camera_udp_auto_level
+
     now = time.monotonic()
     camera_udp_stats.packets += 1
     camera_udp_stats.last_addr = addr
@@ -924,6 +929,25 @@ def _handle_camera_udp_datagram(data: bytes, addr: Tuple[str, int]) -> None:
         camera_udp_stats.crc_errors += 1
         _camera_udp_note_event("crc", now)
         return
+
+    previous_frame_id = camera_udp_stats.last_frame_id
+    if (
+        CAMERA_AUTOTUNE_WARMUP_SEC > 0.0
+        and previous_frame_id > 100
+        and frame_id + 100 < previous_frame_id
+    ):
+        camera_udp_autotune_warm_until_monotonic = max(
+            camera_udp_autotune_warm_until_monotonic,
+            now + CAMERA_AUTOTUNE_WARMUP_SEC,
+        )
+        camera_udp_auto_level = 0
+        camera_udp_stats.completed_window.clear()
+        camera_udp_stats.event_window.clear()
+        print(
+            f"[CAM UDP] frame id reset detected {previous_frame_id}->{frame_id}; "
+            f"autotune warmup {CAMERA_AUTOTUNE_WARMUP_SEC:.1f}s",
+            flush=True,
+        )
 
     camera_udp_stats.completed_frames += 1
     camera_udp_stats.last_frame_id = frame_id
@@ -2193,6 +2217,11 @@ def camera_stats():
         "last_frame_len": camera_udp_stats.last_frame_len,
         "last_timestamp_ms": camera_udp_stats.last_timestamp_ms,
         "last_frame_age_ms": last_frame_age_ms,
+        "autotune_warmup_sec": CAMERA_AUTOTUNE_WARMUP_SEC,
+        "autotune_warmup_remaining_ms": max(
+            0,
+            int((camera_udp_autotune_warm_until_monotonic - now) * 1000.0),
+        ),
         "camera_latest_seq": camera_latest_seq,
         "camera_source_name": camera_source_name,
         "camera_source_active": camera_source_active,
@@ -3497,6 +3526,8 @@ async def ws_camera_esp(ws: WebSocket):
 
 @app.websocket("/ws/camera_ctrl")
 async def ws_camera_ctrl(ws: WebSocket):
+    global camera_udp_autotune_warm_until_monotonic, camera_udp_auto_level
+
     if not CAMERA_CTRL_WS_ENABLED:
         await ws.accept()
         await ws.close(code=1013)
@@ -3506,6 +3537,15 @@ async def ws_camera_ctrl(ws: WebSocket):
     camera_ctrl_clients.add(ws)
     client = f"{ws.client.host}:{ws.client.port}" if ws.client else "unknown"
     print(f"[CAM CTRL] device connected: {client}", flush=True)
+    if CAMERA_AUTOTUNE_WARMUP_SEC > 0.0:
+        now = time.monotonic()
+        camera_udp_autotune_warm_until_monotonic = max(
+            camera_udp_autotune_warm_until_monotonic,
+            now + CAMERA_AUTOTUNE_WARMUP_SEC,
+        )
+        camera_udp_auto_level = 0
+        camera_udp_stats.completed_window.clear()
+        camera_udp_stats.event_window.clear()
     try:
         state = orchestrator.get_state() if orchestrator else "CHAT"
         await _apply_camera_profile_for_state(state, reason="camera_ctrl_connect")

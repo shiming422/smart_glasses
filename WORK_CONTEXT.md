@@ -217,7 +217,37 @@ Do not do yet:
 - Backend inference scheduling: `AIGLASS_NAV_INFER_MIN_INTERVAL_MS` is now `1200`, and the cooldown is measured after the previous inference completion/start reference instead of allowing CPU inference to run back-to-back after a long frame. Runtime status now reports `nav_direct_viewer` and `nav_raw_between_overlays`.
 - Backend annotation CPU saving: `workflow_blindpath.py` supports `AIGLASS_NAV_SKIP_BACKEND_ANNOTATION=1`; cloud enables it because the frontend overlay is now the visible recognition layer.
 - ESP32A firmware change: `esp32_video_mic/main/inc/sys_config.h` now adds UDP burst pacing for public WAN use: `APP_CAM_UDP_CHUNK_GAP_MS=8`, `APP_CAM_UDP_ENOMEM_RETRY=8`, and `APP_CAM_UDP_ENOMEM_RETRY_DELAY_MS=12`. This prevents repeated `sendto errno=12` bursts from turning every frame into an incomplete UDP frame.
-- Cloud camera profile: `backend/docker-compose.cloud.yml` and the live ECS `.env` are set to `QVGA`, `QUALITY=28`, `FPS=5` for both CHAT and navigation, with auto-tune quality `36` and FPS `5`. This is intentionally lower resolution than the earlier SVGA clarity pass because public UDP plus microphone WebSocket was not stable at 10-ish chunks/frame.
+- Superseded historical cloud camera profile from the first hotfix: `QVGA`, `QUALITY=28`, `FPS=5`. The later public-cloud sweep below replaced this with the current stable demo profile.
+
+## 2026-05-21 Public Cloud Smoothness Sweep
+
+- Voice is disabled for the current video demo path. ESP32A firmware sets `APP_MIC_UPLINK_ENABLE=0`; cloud compose/live `.env` set `AIGLASS_AUDIO_WS_ENABLED=0`, `AIGLASS_STREAM_IDLE_SILENCE=0`, and `ENABLE_TTS=false`.
+- Final deployed public-cloud demo profile is `QVGA`, `QUALITY=20`, `FPS=10` for both CHAT and blind navigation. Live ECS `.env` on `47.110.89.207` and `backend/docker-compose.cloud.yml` are aligned to that profile, with auto-tune fallback `QUALITY=28`, `FPS=8`, and `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=60`.
+- ESP32A firmware defaults now also match the final public profile: `CAMERA_FRAME_SIZE=FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=20`, `APP_CAM_DEFAULT_FPS=10`, `CAMERA_XCLK_FREQ_HZ=20000000`, UDP payload `1024`, chunk gap `8ms`, ENOMEM retry `8 * 12ms`.
+- ESP32A camera control now accepts additional low/intermediate frame sizes: `96X96`, `QQVGA`, `128X128`, `QCIF`, `HQVGA`, `240X240`, `320X320`, `CIF`, and `HVGA`, in addition to the older QVGA/VGA/SVGA/XGA/SXGA/UXGA set.
+- ESP32A serial stats now include `avg_cap_ms/max_cap_ms` and `avg_send_ms/max_send_ms`, so future tuning can distinguish camera capture bottleneck from UDP send bottleneck.
+- Backend UDP auto-tune now has a warmup guard for direct Python UDP mode too. When `/ws/camera_ctrl` reconnects or UDP frame ids reset after an ESP32A reboot, it clears the recent drop windows and suppresses immediate auto-downgrade for the warmup interval. This avoids boot/reconnect transients forcing a false downgrade.
+
+Sweep results:
+
+- Stable final: `QVGA q20 fps10`, XCLK `20MHz`, voice off. Cloud `/api/perf/status` showed `complete_fps=9.95`, `drop_ratio_10s=0.0099`, `last_frame_age_ms=6`, `auto_level=0`, and `audio_ws_enabled=false`. Browser `/ws/viewer` measured `539 frames / 55.11s = 9.78fps`, p50 gap `100.1ms`, p95 gap `174.5ms`, max gap `303.7ms`. ESP32A serial stabilized to repeated `50/51 sent_5s`, `fail_5s=0`, `avg_send_ms=1`.
+- Blind navigation validation on the final profile: `/api/test/control` `blind_nav` returned mode `BLINDPATH_NAV`; over 45s the test received `30` `nav_result` events and `0` nav errors, then `stop_nav` returned to `CHAT`. Viewer during navigation measured about `7.8fps` because CPU inference competes with preview scheduling, but recognition itself is alive.
+- Actual captured preview sample: `backend/runtime_logs/cloud_final_q20_fps10_raw.jpg` and oriented preview `backend/runtime_logs/cloud_final_q20_fps10_preview_oriented.jpg`. The sample scene was very dark, so visual clarity should be judged again with the camera aimed at a bright target.
+
+Rejected/near-edge profiles:
+
+- `QVGA q20 fps15` at 20MHz did not increase real capture beyond about 10fps; serial still showed about `50/51 frames per 5s`, so FPS was camera-side limited, not server-limited.
+- `QQVGA q20 fps20` reduced bytes but did not produce a useful product image; it briefly reached about 12fps only with 24MHz XCLK and is too low quality for navigation.
+- 24MHz XCLK plus `QVGA q16/q20 fps12` could briefly reach `11-12fps`, but after reboot or Wi-Fi fluctuation it repeatedly triggered ESP32/lwIP `sendto errno=12`, backend incomplete-frame drops, and browser multi-second stalls. It is not acceptable for demo reliability.
+- `QVGA q12/q14 fps12` and `CIF/HVGA/VGA` variants pushed frame size or send cadence too close to the ESP32A public UDP limit. The failure mode is ESP32A TX memory/link pressure, not ECS CPU/GPU capacity.
+
+Current conclusion:
+
+- Do not upgrade the ECS instance just to improve raw preview FPS. The current server can receive and forward the stable stream, and YOLO/navigation events are produced. The hard limit for smoother public preview is ESP32A camera capture plus fragmented UDP over public Wi-Fi/WAN.
+- If product requirements demand clearly better than `QVGA 10fps`, the next meaningful change is transport/hardware, not a bigger cloud CPU: use a camera/SoC with hardware video encode, or redesign ESP32A upload to a more robust latest-frame transport/gateway that avoids UDP fragment loss and ESP32 lwIP TX memory bursts.
+
+Historical first-hotfix validation below is kept for traceability and is superseded by the public-cloud sweep above:
+
 - Deployment completed to ECS `47.110.89.207`: copied `app_main.py`, `workflow_blindpath.py`, `static/main.js`, `templates/index.html`, and `docker-compose.cloud.yml`; updated live `.env`; rebuilt/restarted Docker container `aiglass`.
 - ESP32A was rebuilt and flashed on `COM22` after the UDP pacing patch. Build passed with ESP-IDF 5.5.2 and generated `build/project-name.bin`; flash passed for MAC `98:a3:16:f7:01:9c`.
 - Validation after QVGA/pacing: ESP32A serial stabilized at `cap_5s=25/26`, `sent_5s=25/26`, `drop_5s=0`, `abort_5s=0`, `fail_5s=0`, `avg_jpeg≈3.63KB`, `avg_send_ms=2-4`, RSSI around `-46/-50`, `fps=5`, `q=28`.
