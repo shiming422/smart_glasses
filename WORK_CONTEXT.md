@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-21 17:23 Asia/Shanghai
+Last updated: 2026-05-21 17:33 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -234,6 +234,11 @@ Do not do yet:
 ## Verification Log
 
 2026-05-21:
+
+- Display-orientation recognition fix completed at 2026-05-21 17:33 Asia/Shanghai after the user reported navigation seemed unable to recognize and asked that on-frame text follow the same page flip as the camera image.
+- Root cause: backend inference/annotation used `cv2.ROTATE_90_CLOCKWISE`, while the frontend display also applied a vertical flip after rotation. Therefore the model/annotation coordinate system did not match the final browser view, and backend-drawn text could appear directionally inconsistent with the flipped page preview.
+- Fix: `_decode_rotate_bgr()` now returns the same display orientation that the browser shows (`rotate 90 clockwise` plus vertical flip). `_viewer_to_transport_bgr()` now applies the exact inverse (`vertical flip` plus `rotate 90 counterclockwise`) before sending processed JPEGs to `/ws/viewer`, because the frontend still applies one shared transform to every frame. This keeps recognition input, backend annotations, and visible text in one coordinate system.
+- Verification: a local transform roundtrip test returned `roundtrip_equal=True`. After ECS deploy, a blind-navigation test collected 8 `nav_result` events with `visualizations=1`, `nav_infer_errors=0`, and 10 stable viewer frames at `800x600` around `26.3KB`; final mode was returned to `CHAT`. Guidance text was empty in the sampled scene, which means inference was running but the current view did not produce a spoken navigation instruction.
 
 - Navigation preview flicker fix completed at 2026-05-21 17:23 Asia/Shanghai after the user reported the picture kept flashing and could not be recognized normally.
 - Root cause: in backend-native navigation preview mode, `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS=1` caused `/ws/viewer` to alternate between raw ESP32A JPEG frames and backend annotated JPEG frames. This looked like recognition masks flashing on/off and made the preview unusable.

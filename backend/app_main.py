@@ -2616,7 +2616,10 @@ def _decode_rotate_bgr(jpeg_data: bytes) -> Optional[np.ndarray]:
     decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if decoded is None or decoded.size == 0:
         return None
-    return cv2.rotate(decoded, cv2.ROTATE_90_CLOCKWISE)
+    rotated = cv2.rotate(decoded, cv2.ROTATE_90_CLOCKWISE)
+    # Match the browser's final camera transform so inference, annotations,
+    # and visible preview text all use the same top/bottom and left/right.
+    return cv2.flip(rotated, 0)
 
 def _viewer_postprocess_bgr(image_bgr: np.ndarray) -> np.ndarray:
     if not VIEWER_POSTPROCESS_ENABLED:
@@ -2657,8 +2660,11 @@ VIEWER_FLIP_H   = _env_flag("AIGLASS_VIEWER_FLIP_H", False)
 VIEWER_ZOOM     = max(1.0, float(os.getenv("AIGLASS_VIEWER_ZOOM", "1.0")))
 
 def _viewer_to_transport_bgr(image_bgr: np.ndarray, apply_flip: bool = True) -> np.ndarray:
-    # Keep /ws/viewer transport orientation consistent with the raw HEVC bridge stream.
-    out = cv2.rotate(image_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    # Inverse of the browser display transform. Processed frames are produced
+    # in display orientation, then packed back into raw transport orientation
+    # because the frontend still applies the same transform to every frame.
+    out = cv2.flip(image_bgr, 0)
+    out = cv2.rotate(out, cv2.ROTATE_90_COUNTERCLOCKWISE)
     if apply_flip and VIEWER_FLIP_H:
         out = cv2.flip(out, 1)
     if VIEWER_ZOOM != 1.0:
