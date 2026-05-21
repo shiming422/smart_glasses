@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-21 16:01 Asia/Shanghai
+Last updated: 2026-05-21 17:15 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -234,6 +234,16 @@ Do not do yet:
 ## Verification Log
 
 2026-05-21:
+
+- Cloud clarity/control fix completed at 2026-05-21 17:15 Asia/Shanghai after the user reported blurry/grainy preview, no visible response from the blind-navigation frontend button, and a red YOLO indicator.
+- Root causes found: camera profile was still optimized for compression/latency (`VGA` plus high numeric JPEG quality such as `40`, which is lower visual quality on ESP32); frontend `YOLO` badge was bound to `yolomedia_running`, which is false during normal blind-path standby even when navigation models are ready; cloud `.env` still had `AIGLASS_NAV_DIRECT_VIEWER=1`, so blind-navigation mode kept showing raw frames while frontend recognition drawing was intentionally disabled.
+- Backend camera profiles are now configurable and demo-clarity-first: `AIGLASS_CAMERA_CHAT_FRAMESIZE=SVGA`, `AIGLASS_CAMERA_CHAT_QUALITY=18`, `AIGLASS_CAMERA_CHAT_FPS=8`, `AIGLASS_CAMERA_NAV_FRAMESIZE=SVGA`, `AIGLASS_CAMERA_NAV_QUALITY=18`, `AIGLASS_CAMERA_NAV_FPS=8`, with auto-tune fallback `AIGLASS_CAMERA_AUTOTUNE_QUALITY=28` and `AIGLASS_CAMERA_AUTOTUNE_FPS=6`. Remember: ESP32 JPEG quality is inverse; lower number means clearer/larger frames.
+- Cloud `.env` was updated to keep `AIGLASS_NAV_DIRECT_VIEWER=0`, so navigation preview uses the backend native blind-path annotated JPEG path again. This makes button presses visibly change the preview once inference results arrive.
+- Frontend status panel was corrected: the old red `YOLO: idle` badge is now `Nav: ready/loading/active` based on `navigation_models_ready`, `nav_infer_active`, and current mode. Test buttons now add immediate chat-panel feedback (`已发送` / `已生效`) and parse non-JSON errors more clearly.
+- Deployed to ECS and rebuilt `aiglass-backend:cpu-cloud`. Logs confirmed camera commands sent to ESP32A: `SET:FRAMESIZE=SVGA`, `SET:QUALITY=18`, `SET:FPS=8`; logs also confirmed `nav_direct_viewer=False`.
+- Verification after deploy: viewer frame capture changed from old `640x480`, about `9.8KB`, to `800x600`, about `17.1KB`; public `/api/perf/status` showed `complete_fps≈8.3`, `drop_ratio_10s=0.0`, `crc_errors=0`, `navigation_models_ready=true`, and live camera/audio/IMU.
+- Blind-navigation regression after the fix: `/api/test/control blind_nav` returned `ok=true` and mode `BLINDPATH_NAV`; viewer frames during navigation included larger annotated frames around `23KB` at `800x600`; inference reached `started=7`, `completed=6`, `errors=0`, `nav_infer_last_ms≈112`; `stop_nav` returned mode to `CHAT`.
+- If the picture is still not clear enough for the demo, next safe knob is lowering `AIGLASS_CAMERA_*_QUALITY` to `15` while watching `drop_ratio_10s`, `avg_jpeg_bytes`, and `last_frame_age_ms`. If drops increase, keep `SVGA q18 fps8` as the stable baseline.
 
 - Product-mode cloud verification completed at 2026-05-21 16:01 Asia/Shanghai. The intended demo path is now: ESP32A/B join any internet-capable 2.4 GHz Wi-Fi by changing only the firmware Wi-Fi SSID/password, then use public fallback `47.110.89.207:8765` when LAN discovery is unavailable. The backend is expected to stay on by default on ECS through Docker Compose `restart: unless-stopped`.
 - ECS backend current source of truth: host `47.110.89.207`, backend directory `/root/smart_glasses_esp32_workspace/backend`, compose file `docker-compose.cloud.yml`, container `aiglass`, image `aiglass-backend:cpu-cloud`. Public ports required for demo are TCP `8765`, UDP `22345` camera, UDP `12345` IMU, and UDP `54321` discovery. Keep security group rules open for the demo, then narrow them later if needed.

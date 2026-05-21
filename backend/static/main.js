@@ -250,7 +250,15 @@
   function updateTestStatus(data){
     if (!data) return;
     setNeutralBadge($modeBadge, `Mode: ${data.mode || '--'}`);
-    setBadge($yoloBadge, !!data.yolomedia_running, `YOLO: ${data.yolomedia_running ? 'running' : 'idle'}`);
+    const navReady = !!data.navigation_models_ready;
+    const navActive = !!data.nav_infer_active || !['CHAT', 'IDLE', undefined, null, ''].includes(data.mode);
+    if (data.yolomedia_running) {
+      setBadge($yoloBadge, true, 'YOLO: item running');
+    } else if (navReady) {
+      setBadge($yoloBadge, true, `Nav: ${navActive ? 'active' : 'ready'}`);
+    } else {
+      setBadge($yoloBadge, false, 'Nav: loading');
+    }
     setBadge($omniBadge, !!data.omni_conversation_active, `Omni: ${data.omni_conversation_active ? 'active' : 'idle'}`);
     updateCameraSourceStatus(data);
   }
@@ -264,14 +272,40 @@
     }catch(e){}
   }
 
+  function testActionLabel(action){
+    return ({
+      chat: 'CHAT',
+      blind_nav: '盲道导航',
+      crossing: '过马路',
+      traffic_light: '红绿灯',
+      stop_nav: '停止导航',
+      item_search: '开始找物品',
+      item_stop: '停止找物品',
+      reset_audio: '系统重置',
+      send_text: '文本命令',
+    })[action] || action;
+  }
+
+  async function readJsonOrError(resp){
+    const text = await resp.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      return { ok: false, error: text.slice(0, 240) };
+    }
+  }
+
   async function sendTestControl(action, extra = {}){
+    const label = testActionLabel(action);
+    addMessage(`[测试面板] 已发送：${label}`, false);
     try{
       const resp = await fetch('/api/test/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, ...extra })
       });
-      const data = await resp.json();
+      const data = await readJsonOrError(resp);
       if (!resp.ok || data.ok === false){
         const err = data && data.error ? data.error : 'request_failed';
         addMessage(`[测试面板] 操作失败：${err}`, false);
@@ -279,6 +313,8 @@
         return false;
       }
       if (data && data.status) updateTestStatus(data.status);
+      addMessage(`[测试面板] 已生效：${label}`, false);
+      window.setTimeout(refreshTestStatus, 300);
       return true;
     }catch(e){
       addMessage(`[测试面板] 请求失败：${e.message || e}`, false);

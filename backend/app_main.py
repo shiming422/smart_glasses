@@ -157,6 +157,14 @@ CAMERA_GATEWAY_TCP_BIND_HOST = (
 CAMERA_GATEWAY_TCP_PORT = max(1, min(65535, _env_int("AIGLASS_CAMERA_GATEWAY_TCP_PORT", 22346)))
 CAMERA_GATEWAY_BIN = os.getenv("AIGLASS_CAMERA_GATEWAY_BIN", "").strip()
 CAMERA_AUTOTUNE_WARMUP_SEC = max(0.0, _env_float("AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC", 35.0))
+CAMERA_CHAT_FRAMESIZE = os.getenv("AIGLASS_CAMERA_CHAT_FRAMESIZE", "SVGA").strip().upper() or "SVGA"
+CAMERA_CHAT_QUALITY = min(40, max(5, _env_int("AIGLASS_CAMERA_CHAT_QUALITY", 18)))
+CAMERA_CHAT_FPS = min(30, max(1, _env_int("AIGLASS_CAMERA_CHAT_FPS", 8)))
+CAMERA_NAV_FRAMESIZE = os.getenv("AIGLASS_CAMERA_NAV_FRAMESIZE", "SVGA").strip().upper() or "SVGA"
+CAMERA_NAV_QUALITY = min(40, max(5, _env_int("AIGLASS_CAMERA_NAV_QUALITY", 18)))
+CAMERA_NAV_FPS = min(30, max(1, _env_int("AIGLASS_CAMERA_NAV_FPS", 8)))
+CAMERA_AUTOTUNE_QUALITY = min(40, max(5, _env_int("AIGLASS_CAMERA_AUTOTUNE_QUALITY", 28)))
+CAMERA_AUTOTUNE_FPS = min(30, max(1, _env_int("AIGLASS_CAMERA_AUTOTUNE_FPS", 6)))
 CAMERA_SOURCE_DEFAULT = os.getenv("AIGLASS_CAMERA_SOURCE", "cpp_gateway").strip().lower()
 RECORD_FRAME_FPS = max(1, _env_int("AIGLASS_RECORD_FRAME_FPS", 10))
 AUTO_RECORD_ENABLED = _env_flag("AIGLASS_AUTO_RECORD", False)
@@ -202,6 +210,8 @@ print(
     f"@{CAMERA_GATEWAY_TCP_HOST}:{CAMERA_GATEWAY_TCP_PORT}, "
     f"gateway_bind={CAMERA_GATEWAY_TCP_BIND_HOST}:{CAMERA_GATEWAY_TCP_PORT}, "
     f"autotune_warmup_sec={CAMERA_AUTOTUNE_WARMUP_SEC}, "
+    f"chat_profile={CAMERA_CHAT_FRAMESIZE}/q{CAMERA_CHAT_QUALITY}/{CAMERA_CHAT_FPS}fps, "
+    f"nav_profile={CAMERA_NAV_FRAMESIZE}/q{CAMERA_NAV_QUALITY}/{CAMERA_NAV_FPS}fps, "
     f"record_fps={RECORD_FRAME_FPS}, "
     f"auto_record={AUTO_RECORD_ENABLED}, nav_direct_viewer={NAV_DIRECT_VIEWER_ENABLED}, "
     f"handover_stale_sec={CAMERA_WS_HANDOVER_STALE_SEC}",
@@ -609,9 +619,17 @@ def _camera_profile_for_state(state: Optional[str]) -> List[str]:
         "TRAFFIC_LIGHT_DETECTION",
     }
     if state in nav_states:
-        return ["SET:FRAMESIZE=VGA", "SET:QUALITY=30", "SET:FPS=10"]
+        return [
+            f"SET:FRAMESIZE={CAMERA_NAV_FRAMESIZE}",
+            f"SET:QUALITY={CAMERA_NAV_QUALITY}",
+            f"SET:FPS={CAMERA_NAV_FPS}",
+        ]
     if state in {None, "CHAT", "IDLE"}:
-        return ["SET:QUALITY=40", "SET:FPS=10"]
+        return [
+            f"SET:FRAMESIZE={CAMERA_CHAT_FRAMESIZE}",
+            f"SET:QUALITY={CAMERA_CHAT_QUALITY}",
+            f"SET:FPS={CAMERA_CHAT_FPS}",
+        ]
     return []
 
 
@@ -664,10 +682,10 @@ async def _camera_udp_maybe_autotune() -> None:
 
     if camera_udp_auto_level < 1:
         camera_udp_auto_level = 1
-        await _camera_ctrl_send_text("SET:QUALITY=40", reason=f"udp_drop_ratio={ratio:.2f}")
+        await _camera_ctrl_send_text(f"SET:QUALITY={CAMERA_AUTOTUNE_QUALITY}", reason=f"udp_drop_ratio={ratio:.2f}")
     elif camera_udp_auto_level < 2:
         camera_udp_auto_level = 2
-        await _camera_ctrl_send_text("SET:FPS=8", reason=f"udp_drop_ratio={ratio:.2f}")
+        await _camera_ctrl_send_text(f"SET:FPS={CAMERA_AUTOTUNE_FPS}", reason=f"udp_drop_ratio={ratio:.2f}")
 
 
 async def nav_event_broadcast(payload: Dict[str, Any]) -> None:
@@ -977,10 +995,10 @@ async def _camera_gateway_maybe_autotune() -> None:
 
     if camera_udp_auto_level < 1:
         camera_udp_auto_level = 1
-        await _camera_ctrl_send_text("SET:QUALITY=40", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
+        await _camera_ctrl_send_text(f"SET:QUALITY={CAMERA_AUTOTUNE_QUALITY}", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
     elif camera_udp_auto_level < 2:
         camera_udp_auto_level = 2
-        await _camera_ctrl_send_text("SET:FPS=8", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
+        await _camera_ctrl_send_text(f"SET:FPS={CAMERA_AUTOTUNE_FPS}", reason=f"cpp_gateway_drop_ratio={ratio:.2f}")
 
 
 async def _handle_camera_gateway_jpeg(payload: bytes, frame_id: int, timestamp_ms: int) -> None:
