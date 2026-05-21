@@ -123,7 +123,7 @@ OVERLAY_STALE_MS = max(100, _env_int("AIGLASS_OVERLAY_STALE_MS", 400))
 PATH_FRAME_DIV = max(1, _env_int("AIGLASS_PATH_FRAME_DIV", 2))
 TRAFFIC_FRAME_DIV = max(1, _env_int("AIGLASS_TRAFFIC_FRAME_DIV", 2))
 NAV_VIEWER_FRAME_DIV = max(1, _env_int("AIGLASS_NAV_VIEWER_FRAME_DIV", 4))
-NAV_RAW_BETWEEN_OVERLAYS = _env_flag("AIGLASS_NAV_RAW_BETWEEN_OVERLAYS", True)
+NAV_RAW_BETWEEN_OVERLAYS = _env_flag("AIGLASS_NAV_RAW_BETWEEN_OVERLAYS", False)
 NAV_INFER_MIN_INTERVAL_MS = max(0, _env_int("AIGLASS_NAV_INFER_MIN_INTERVAL_MS", 750))
 NAV_INFER_MIN_INTERVAL_SEC = NAV_INFER_MIN_INTERVAL_MS / 1000.0
 CAMERA_UDP_PORT = max(1, min(65535, _env_int("AIGLASS_CAMERA_UDP_PORT", 22345)))
@@ -3360,7 +3360,14 @@ async def camera_processor_loop():
                                 nav_viewer_frames_since_overlay = 0
                                 nav_viewer_force_overlay = False
                                 overlay_sent = True
-                    if viewer_needs_processed_frame and not overlay_sent:
+                    if (
+                        viewer_needs_processed_frame
+                        and not overlay_sent
+                        and (
+                            NAV_RAW_BETWEEN_OVERLAYS
+                            or nav_frame_cache.annotated_frame is None
+                        )
+                    ):
                         await _broadcast_camera_jpeg(data)
                 except Exception as e:
                     if _is_memory_pressure_error(e):

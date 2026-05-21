@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-21 17:15 Asia/Shanghai
+Last updated: 2026-05-21 17:23 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -234,6 +234,12 @@ Do not do yet:
 ## Verification Log
 
 2026-05-21:
+
+- Navigation preview flicker fix completed at 2026-05-21 17:23 Asia/Shanghai after the user reported the picture kept flashing and could not be recognized normally.
+- Root cause: in backend-native navigation preview mode, `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS=1` caused `/ws/viewer` to alternate between raw ESP32A JPEG frames and backend annotated JPEG frames. This looked like recognition masks flashing on/off and made the preview unusable.
+- Fix: `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS` now defaults to `0`; cloud `.env` was updated to `AIGLASS_NAV_RAW_BETWEEN_OVERLAYS=0`; `docker-compose.cloud.yml` and local compose carry the same default. The nav viewer path now drops/holds instead of falling back to raw frames once an annotated frame cache exists, so it does not reintroduce raw frames between annotated frames.
+- Deployed to ECS and rebuilt the `aiglass` container. Regression test: after `blind_nav`, 12 consecutive `/ws/viewer` frames were all stable `800x600` annotated frames around `27.6KB` (`27615-27730` bytes), not alternating with raw `17KB` frames. During the same test, mode was `BLINDPATH_NAV`, camera was about `7.63fps`, `nav_infer_started=7`, `nav_infer_completed=6`, `nav_infer_errors=0`; `stop_nav` returned to `CHAT`.
+- Current quality/latency tradeoff: stable navigation preview is now prioritized over maximum raw preview fps. If drop ratio becomes high in real demo movement, first try `AIGLASS_CAMERA_*_QUALITY=20` or `AIGLASS_CAMERA_*_FPS=6`; do not re-enable raw-between-overlays unless explicitly debugging transport latency.
 
 - Cloud clarity/control fix completed at 2026-05-21 17:15 Asia/Shanghai after the user reported blurry/grainy preview, no visible response from the blind-navigation frontend button, and a red YOLO indicator.
 - Root causes found: camera profile was still optimized for compression/latency (`VGA` plus high numeric JPEG quality such as `40`, which is lower visual quality on ESP32); frontend `YOLO` badge was bound to `yolomedia_running`, which is false during normal blind-path standby even when navigation models are ready; cloud `.env` still had `AIGLASS_NAV_DIRECT_VIEWER=1`, so blind-navigation mode kept showing raw frames while frontend recognition drawing was intentionally disabled.
