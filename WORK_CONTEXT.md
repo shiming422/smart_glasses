@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-21 17:33 Asia/Shanghai
+Last updated: 2026-05-21 18:18 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -209,6 +209,21 @@ Do not do yet:
 - The important working behavior is: ESP32A camera sends fragmented JPEG over UDP `22345`; backend receives real hardware frames with no CRC/invalid errors; browser preview is raw-first; navigation overlay is carried by `/ws/nav_events`; ESP32A control profile is carried by `/ws/camera_ctrl`; ESP32B remains audio playback + IMU.
 - Before publishing this snapshot, `python -m py_compile backend\app_main.py` passed. The GitHub target for the overwrite push is `https://github.com/shiming422/smart_glasses.git`, remote default branch `main`.
 - Documentation added after the golden baseline: root `README.md` explains the two-board architecture, backend/Docker startup, firewall rule, firmware flashing, ignored private/generated files, and rollback/fallback path. `COMMIT_HISTORY.md` records the engineering commit timeline through the golden baseline.
+
+## 2026-05-21 Cloud Smoothness Hotfix
+
+- User symptom: after clarity/native-overlay work, cloud demo felt very laggy. The actual bottleneck had two layers: navigation preview was tied to backend annotated JPEG generation, and ESP32A UDP burst sending was exhausting lwIP/Wi-Fi TX memory on the public route.
+- Backend/frontend change: cloud navigation now uses `AIGLASS_NAV_DIRECT_VIEWER=1`, so `/ws/viewer` keeps sending raw ESP32 JPEG frames at camera cadence while `/ws/nav_events` carries recognition geometry. `backend/static/main.js` draws the navigation visualizations on `navOverlayCanvas` in the same rotated/flipped display coordinate system as the preview.
+- Backend inference scheduling: `AIGLASS_NAV_INFER_MIN_INTERVAL_MS` is now `1200`, and the cooldown is measured after the previous inference completion/start reference instead of allowing CPU inference to run back-to-back after a long frame. Runtime status now reports `nav_direct_viewer` and `nav_raw_between_overlays`.
+- Backend annotation CPU saving: `workflow_blindpath.py` supports `AIGLASS_NAV_SKIP_BACKEND_ANNOTATION=1`; cloud enables it because the frontend overlay is now the visible recognition layer.
+- ESP32A firmware change: `esp32_video_mic/main/inc/sys_config.h` now adds UDP burst pacing for public WAN use: `APP_CAM_UDP_CHUNK_GAP_MS=8`, `APP_CAM_UDP_ENOMEM_RETRY=8`, and `APP_CAM_UDP_ENOMEM_RETRY_DELAY_MS=12`. This prevents repeated `sendto errno=12` bursts from turning every frame into an incomplete UDP frame.
+- Cloud camera profile: `backend/docker-compose.cloud.yml` and the live ECS `.env` are set to `QVGA`, `QUALITY=28`, `FPS=5` for both CHAT and navigation, with auto-tune quality `36` and FPS `5`. This is intentionally lower resolution than the earlier SVGA clarity pass because public UDP plus microphone WebSocket was not stable at 10-ish chunks/frame.
+- Deployment completed to ECS `47.110.89.207`: copied `app_main.py`, `workflow_blindpath.py`, `static/main.js`, `templates/index.html`, and `docker-compose.cloud.yml`; updated live `.env`; rebuilt/restarted Docker container `aiglass`.
+- ESP32A was rebuilt and flashed on `COM22` after the UDP pacing patch. Build passed with ESP-IDF 5.5.2 and generated `build/project-name.bin`; flash passed for MAC `98:a3:16:f7:01:9c`.
+- Validation after QVGA/pacing: ESP32A serial stabilized at `cap_5s=25/26`, `sent_5s=25/26`, `drop_5s=0`, `abort_5s=0`, `fail_5s=0`, `avg_jpeg≈3.63KB`, `avg_send_ms=2-4`, RSSI around `-46/-50`, `fps=5`, `q=28`.
+- Cloud validation after QVGA/pacing: `/api/perf/status` showed camera `complete_fps=5.02`, `avg_jpeg_bytes≈3629`, `drop_ratio_10s=0.0`, `last_frame_age_ms=89`, `crc_errors=0`, `invalid_packets=0`, `auto_level=0`, with mic/audio and ESP32B IMU still live.
+- Navigation validation: `blind_nav` entered `BLINDPATH_NAV`; during navigation camera stayed around `complete_fps=5.09`, `last_frame_age_ms=93`, and `drop_ratio_10s=0.0`. A direct websocket probe over 18 seconds received `91` `/ws/viewer` frames (`5.06 fps`) and `7` `nav_result` events, all with visualizations. `stop_nav` returned the backend to `CHAT`.
+- Current tradeoff: preview is now stable but only QVGA/5fps. This is the known public-cloud demo profile. If the user needs clearer recognition later, the next proper engineering step is not raising UDP size again; it is adding a reliable latest-frame TCP/WebSocket camera uplink for public mode, or implementing a native gateway/codec that avoids ESP32 lwIP UDP burst exhaustion while keeping latency bounded.
 
 ## Git Workflow Requirement
 

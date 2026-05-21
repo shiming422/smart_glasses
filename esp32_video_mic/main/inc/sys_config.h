@@ -51,6 +51,9 @@
 #define APP_CAM_CTRL_WS_PATH "/ws/camera_ctrl"
 #define APP_CAM_UDP_PORT    22345
 #define APP_CAM_UDP_PAYLOAD 1024
+#define APP_CAM_UDP_CHUNK_GAP_MS 8
+#define APP_CAM_UDP_ENOMEM_RETRY 8
+#define APP_CAM_UDP_ENOMEM_RETRY_DELAY_MS 12
 #define APP_AUD_WS_PATH     "/ws_audio"
 #define APP_STREAM_WAV_PATH "/stream.wav"
 

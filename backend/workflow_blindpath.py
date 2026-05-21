@@ -107,6 +107,7 @@ VIS_COLORS = {
     "turn_point": (128, 0, 128),     # 紫色
     "pulse_effect": (100, 100, 255)  # 淡红色
 }
+SKIP_BACKEND_ANNOTATION = _env_flag("AIGLASS_NAV_SKIP_BACKEND_ANNOTATION", False)
 
 # 障碍物名称映射
 _OBSTACLE_NAME_CN = {
@@ -829,14 +830,15 @@ class BlindPathNavigator:
         # 7. 生成标注图像
         annotated_image = None
 
-        if frame_visualizations:
-            annotated_image = self._draw_visualizations(image.copy(), frame_visualizations)
-        else:
-            annotated_image = image.copy()
-        
-        # 添加底部指令按钮（显示当前实际播报的语音）
-        current_instruction = final_guidance_text if final_guidance_text else "等待中..."
-        annotated_image = self._draw_command_button(annotated_image, current_instruction)
+        if not SKIP_BACKEND_ANNOTATION:
+            if frame_visualizations:
+                annotated_image = self._draw_visualizations(image.copy(), frame_visualizations)
+            else:
+                annotated_image = image.copy()
+            
+            # 添加底部指令按钮（显示当前实际播报的语音）
+            current_instruction = final_guidance_text if final_guidance_text else "等待中..."
+            annotated_image = self._draw_command_button(annotated_image, current_instruction)
         
         # 8. 返回结果
         return ProcessingResult(

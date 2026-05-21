@@ -35,6 +35,7 @@
   const DEFAULT_VIEWER_RAW_WIDTH = 720;
   const DEFAULT_VIEWER_RAW_HEIGHT = 1280;
   const VIEWER_MAX_SCALE = 1.55;
+  const NAV_OVERLAY_STALE_MS = 2500;
 
   // === 获取/创建聊天容器（关键补丁） ===
   let chatContainer = document.getElementById('chatContainer');
@@ -543,6 +544,140 @@
 
   window.setInterval(refreshCameraBadge, 500);
 
+  function navNumber(value, fallback = 0){
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function navPoint(value, scale){
+    if (!Array.isArray(value) || value.length < 2) return null;
+    return {
+      x: navNumber(value[0]) * scale.x,
+      y: navNumber(value[1]) * scale.y,
+    };
+  }
+
+  function navColor(value, fallback = 'rgba(255,255,255,0.92)'){
+    if (typeof value === 'string' && value.trim()) return value;
+    if (Array.isArray(value) && value.length >= 3) {
+      const r = Math.max(0, Math.min(255, navNumber(value[0])));
+      const g = Math.max(0, Math.min(255, navNumber(value[1])));
+      const b = Math.max(0, Math.min(255, navNumber(value[2])));
+      const a = value.length >= 4 ? Math.max(0, Math.min(1, navNumber(value[3], 1))) : 1;
+      return `rgba(${r},${g},${b},${a})`;
+    }
+    return fallback;
+  }
+
+  function navScaledThickness(value, scale, fallback = 2){
+    const base = navNumber(value, fallback);
+    const s = Math.max(0.6, Math.min(2.5, (scale.x + scale.y) / 2));
+    return Math.max(1, Math.round(base * s));
+  }
+
+  function navPathFromPoints(points, scale){
+    if (!Array.isArray(points) || !points.length) return false;
+    let started = false;
+    for (const raw of points) {
+      const p = navPoint(raw, scale);
+      if (!p) continue;
+      if (!started) {
+        navCtx.moveTo(p.x, p.y);
+        started = true;
+      } else {
+        navCtx.lineTo(p.x, p.y);
+      }
+    }
+    return started;
+  }
+
+  function navDrawLine(start, end, color, thickness, dashed = false){
+    if (!start || !end) return;
+    navCtx.save();
+    navCtx.strokeStyle = color;
+    navCtx.lineWidth = thickness;
+    navCtx.lineCap = 'round';
+    navCtx.lineJoin = 'round';
+    if (dashed) navCtx.setLineDash([10, 6]);
+    navCtx.beginPath();
+    navCtx.moveTo(start.x, start.y);
+    navCtx.lineTo(end.x, end.y);
+    navCtx.stroke();
+    navCtx.restore();
+  }
+
+  function navDrawArrow(start, end, color, thickness, tipLength = 0.2){
+    if (!start || !end) return;
+    navDrawLine(start, end, color, thickness);
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return;
+    const head = Math.max(8, Math.min(32, len * navNumber(tipLength, 0.2)));
+    const angle = Math.atan2(dy, dx);
+    navCtx.save();
+    navCtx.fillStyle = color;
+    navCtx.beginPath();
+    navCtx.moveTo(end.x, end.y);
+    navCtx.lineTo(end.x - head * Math.cos(angle - Math.PI / 7), end.y - head * Math.sin(angle - Math.PI / 7));
+    navCtx.lineTo(end.x - head * Math.cos(angle + Math.PI / 7), end.y - head * Math.sin(angle + Math.PI / 7));
+    navCtx.closePath();
+    navCtx.fill();
+    navCtx.restore();
+  }
+
+  function navDrawText(text, x, y, opts = {}){
+    if (!text) return;
+    const size = Math.max(12, Math.min(28, Math.round(24 * navNumber(opts.fontScale, 0.6) / 0.6)));
+    const padding = Math.max(4, Math.round(size * 0.28));
+    navCtx.save();
+    navCtx.font = `600 ${size}px "Microsoft YaHei", "PingFang SC", Arial, sans-serif`;
+    navCtx.textBaseline = 'top';
+    const lines = String(text).split(/\n/).slice(0, 8);
+    const width = Math.max(...lines.map((line) => navCtx.measureText(line).width), 1);
+    const lineHeight = Math.round(size * 1.35);
+    const boxX = Math.max(4, Math.min(navOverlayCanvas.width - width - padding * 2 - 4, x));
+    const boxY = Math.max(4, Math.min(navOverlayCanvas.height - lineHeight * lines.length - padding * 2 - 4, y));
+    if (opts.bg !== false) {
+      navCtx.fillStyle = opts.bgColor || 'rgba(0,0,0,0.56)';
+      navCtx.fillRect(boxX - padding, boxY - padding, width + padding * 2, lineHeight * lines.length + padding * 2);
+    }
+    navCtx.lineWidth = Math.max(2, Math.round(size / 8));
+    navCtx.strokeStyle = 'rgba(0,0,0,0.85)';
+    navCtx.fillStyle = opts.color || 'rgba(255,255,255,0.96)';
+    lines.forEach((line, idx) => {
+      const yy = boxY + idx * lineHeight;
+      navCtx.strokeText(line, boxX, yy);
+      navCtx.fillText(line, boxX, yy);
+    });
+    navCtx.restore();
+  }
+
+  function navDrawDataPanel(element, scale){
+    const pos = navPoint(element.position || element.pos || [16, 16], scale) || { x: 16, y: 16 };
+    const data = element.data && typeof element.data === 'object' ? element.data : {};
+    const lines = Object.entries(data).slice(0, 8).map(([key, value]) => `${key}: ${value}`);
+    if (!lines.length) return;
+    navDrawText(lines.join('\n'), pos.x, pos.y, {
+      fontScale: 0.45,
+      color: 'rgba(255,255,255,0.96)',
+      bgColor: 'rgba(0,0,0,0.42)',
+    });
+  }
+
+  function navDrawGuidance(event){
+    const text = (event.guidance || '').trim();
+    const mode = (event.mode || '').trim();
+    if (!text && !mode) return;
+    const label = text || (mode === 'CHAT' ? '' : '识别中...');
+    if (!label) return;
+    navDrawText(label, 18, navOverlayCanvas.height - 58, {
+      fontScale: 0.48,
+      color: 'rgba(255,255,255,0.98)',
+      bgColor: 'rgba(0,0,0,0.48)',
+    });
+  }
+
   function drawNavOverlay(forceClear = false){
     if (!navCtx || !navOverlayCanvas) return;
     syncViewerCanvasSize();
@@ -550,11 +685,133 @@
     const h = navOverlayCanvas.height;
     navCtx.setTransform(1, 0, 0, 1, 0, 0);
     navCtx.clearRect(0, 0, w, h);
-    void forceClear;
-    void w;
-    void h;
-    // Navigation annotations are now drawn by the original backend OpenCV path.
-    // Keep this canvas transparent so it does not fight with the native overlay.
+    if (forceClear || !lastNavEvent || lastNavEvent.type !== 'nav_result') return;
+    if (performance.now() - navNumber(lastNavEvent.receivedAt, 0) > NAV_OVERLAY_STALE_MS) return;
+
+    const frameW = Math.max(1, navNumber(lastNavEvent.frame_width, viewerLayout.displayWidth));
+    const frameH = Math.max(1, navNumber(lastNavEvent.frame_height, viewerLayout.displayHeight));
+    const scale = { x: w / frameW, y: h / frameH };
+    const visualizations = Array.isArray(lastNavEvent.visualizations) ? lastNavEvent.visualizations : [];
+    const masks = new Set(['blind_path_mask', 'obstacle_mask', 'crosswalk_mask']);
+
+    for (const element of visualizations) {
+      if (!element || !masks.has(element.type)) continue;
+      navCtx.save();
+      navCtx.fillStyle = navColor(element.color, 'rgba(0,255,0,0.32)');
+      navCtx.beginPath();
+      if (navPathFromPoints(element.points, scale)) {
+        navCtx.closePath();
+        navCtx.fill();
+      }
+      navCtx.restore();
+    }
+
+    for (const element of visualizations) {
+      if (!element || masks.has(element.type)) continue;
+      const color = navColor(element.color);
+      const thickness = navScaledThickness(element.thickness ?? element.width, scale, 2);
+      if (element.type === 'line' || element.type === 'dashed_line') {
+        navDrawLine(navPoint(element.start, scale), navPoint(element.end, scale), color, thickness, element.type === 'dashed_line');
+      } else if (element.type === 'outline' || element.type === 'polyline') {
+        navCtx.save();
+        navCtx.strokeStyle = color;
+        navCtx.lineWidth = thickness;
+        navCtx.lineCap = 'round';
+        navCtx.lineJoin = 'round';
+        navCtx.beginPath();
+        if (navPathFromPoints(element.points, scale)) {
+          if (element.type === 'outline') navCtx.closePath();
+          navCtx.stroke();
+        }
+        navCtx.restore();
+      } else if (element.type === 'circle') {
+        const center = navPoint(element.center, scale);
+        if (!center) continue;
+        navCtx.save();
+        navCtx.beginPath();
+        navCtx.arc(center.x, center.y, navNumber(element.radius, 10) * Math.max(scale.x, scale.y), 0, Math.PI * 2);
+        if (element.filled !== false) {
+          navCtx.fillStyle = color;
+          navCtx.fill();
+        }
+        navCtx.strokeStyle = color;
+        navCtx.lineWidth = thickness;
+        navCtx.stroke();
+        navCtx.restore();
+      } else if (element.type === 'rectangle') {
+        const a = navPoint(element.top_left, scale);
+        const b = navPoint(element.bottom_right, scale);
+        if (!a || !b) continue;
+        navCtx.save();
+        if (element.filled !== false) {
+          navCtx.fillStyle = color;
+          navCtx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+        } else {
+          navCtx.strokeStyle = color;
+          navCtx.lineWidth = thickness;
+          navCtx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+        }
+        navCtx.restore();
+      } else if (element.type === 'arrow') {
+        navDrawArrow(navPoint(element.start, scale), navPoint(element.end, scale), color, thickness, element.tip_length);
+      } else if (element.type === 'double_arrow') {
+        const start = navPoint(element.start, scale);
+        const end = navPoint(element.end, scale);
+        navDrawArrow(start, end, color, thickness, element.tip_length || 0.15);
+        navDrawArrow(end, start, color, thickness, element.tip_length || 0.15);
+      } else if (element.type === 'angle_arc') {
+        const center = navPoint(element.center, scale);
+        if (!center) continue;
+        navCtx.save();
+        navCtx.strokeStyle = color;
+        navCtx.lineWidth = thickness;
+        navCtx.beginPath();
+        const radius = navNumber(element.radius, 40) * Math.max(scale.x, scale.y);
+        navCtx.arc(
+          center.x,
+          center.y,
+          radius,
+          navNumber(element.start_angle, -90) * Math.PI / 180,
+          navNumber(element.end_angle, 0) * Math.PI / 180,
+          false,
+        );
+        navCtx.stroke();
+        navCtx.restore();
+      } else if (element.type === 'text_with_bg') {
+        const pos = navPoint(element.position || element.pos, scale);
+        if (pos) {
+          navDrawText(element.text || '', pos.x, pos.y, {
+            fontScale: element.font_scale,
+            color,
+            bgColor: navColor(element.bg_color, 'rgba(0,0,0,0.5)'),
+          });
+        }
+      } else if (element.type === 'text') {
+        const pos = navPoint(element.pos || element.position, scale);
+        if (pos) navDrawText(element.text || '', pos.x, pos.y, { fontScale: 0.55, color });
+      } else if (element.type === 'warning_icon') {
+        const pos = navPoint(element.position || element.pos, scale);
+        if (!pos) continue;
+        const dangerColor = element.level === 'danger' ? 'rgba(255,40,40,0.95)' : 'rgba(255,190,40,0.95)';
+        navCtx.save();
+        navCtx.fillStyle = dangerColor;
+        navCtx.beginPath();
+        navCtx.moveTo(pos.x, pos.y - 20);
+        navCtx.lineTo(pos.x - 18, pos.y + 14);
+        navCtx.lineTo(pos.x + 18, pos.y + 14);
+        navCtx.closePath();
+        navCtx.fill();
+        navCtx.strokeStyle = 'rgba(255,255,255,0.9)';
+        navCtx.lineWidth = 2;
+        navCtx.stroke();
+        navCtx.restore();
+        if (element.text) navDrawText(element.text, pos.x - 26, pos.y + 20, { fontScale: 0.42 });
+      } else if (element.type === 'data_panel') {
+        navDrawDataPanel(element, scale);
+      }
+    }
+
+    navDrawGuidance(lastNavEvent);
   }
 
   function drawRotatedFrame(src, srcW, srcH){

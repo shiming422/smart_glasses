@@ -334,22 +334,36 @@ static bool cam_udp_send_frame(camera_fb_t *fb) {
         memcpy(packet, &hdr, sizeof(hdr));
         memcpy(packet + sizeof(hdr), fb->buf + offset, payload_len);
 
-        ssize_t sent = sendto(
-            s_udp_socket,
-            packet,
-            sizeof(hdr) + payload_len,
-            0,
-            (struct sockaddr *)&s_udp_dest,
-            sizeof(s_udp_dest));
+        size_t packet_len = sizeof(hdr) + payload_len;
+        ssize_t sent = -1;
+        int last_errno = 0;
+        for (int attempt = 0; attempt <= APP_CAM_UDP_ENOMEM_RETRY; ++attempt) {
+            sent = sendto(
+                s_udp_socket,
+                packet,
+                packet_len,
+                0,
+                (struct sockaddr *)&s_udp_dest,
+                sizeof(s_udp_dest));
+            if (sent == (ssize_t)packet_len) {
+                last_errno = 0;
+                break;
+            }
+            last_errno = errno;
+            if (last_errno != ENOMEM || attempt >= APP_CAM_UDP_ENOMEM_RETRY) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(APP_CAM_UDP_ENOMEM_RETRY_DELAY_MS));
+        }
         if (sent != (ssize_t)(sizeof(hdr) + payload_len)) {
             s_udp_send_fail_count++;
             ESP_LOGW(TAG, "udp send failed frame=%" PRIu32 " chunk=%" PRIu32 "/%" PRIu32 " errno=%d sent=%d",
-                     frame_id, i + 1, chunk_count_u32, errno, (int)sent);
+                     frame_id, i + 1, chunk_count_u32, last_errno, (int)sent);
             return false;
         }
 
-        if ((i & 0x3u) == 0x3u) {
-            taskYIELD();
+        if (i + 1u < chunk_count_u32) {
+            vTaskDelay(pdMS_TO_TICKS(APP_CAM_UDP_CHUNK_GAP_MS));
         }
     }
 

@@ -2053,6 +2053,8 @@ def _get_runtime_status() -> Dict[str, Any]:
             else int((time.monotonic() - nav_infer_last_completed_monotonic) * 1000.0)
         ),
         "nav_infer_min_interval_ms": NAV_INFER_MIN_INTERVAL_MS,
+        "nav_direct_viewer": NAV_DIRECT_VIEWER_ENABLED,
+        "nav_raw_between_overlays": NAV_RAW_BETWEEN_OVERLAYS,
         "nav_infer_last_started_seq": nav_infer_last_started_seq,
         "nav_infer_last_completed_seq": nav_infer_last_completed_seq,
         "nav_infer_last_decode_ms": nav_infer_last_decode_ms,
@@ -3256,7 +3258,10 @@ async def camera_processor_loop():
                 nav_interval_ready = (
                     first_nav_result_needed
                     or NAV_INFER_MIN_INTERVAL_MS <= 0
-                    or (time.monotonic() - nav_infer_last_started_monotonic) >= NAV_INFER_MIN_INTERVAL_SEC
+                    or (
+                        time.monotonic()
+                        - max(nav_infer_last_completed_monotonic, nav_infer_last_started_monotonic)
+                    ) >= NAV_INFER_MIN_INTERVAL_SEC
                 )
                 should_run_nav_infer = (
                     nav_infer_task is None
