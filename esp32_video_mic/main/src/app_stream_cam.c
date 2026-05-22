@@ -87,8 +87,6 @@ static int s_capture_core = -1;
 static int s_udp_core = -1;
 static int s_ctrl_core = -1;
 static uint32_t s_next_frame_id = 1;
-static volatile uint32_t s_consecutive_send_fail = 0;
-static volatile int64_t s_udp_pause_until_ms = 0;
 
 static uint32_t crc32_ieee(const uint8_t *data, size_t len) {
     uint32_t crc = 0xFFFFFFFFu;
@@ -116,60 +114,6 @@ static bool apply_framesize(framesize_t fs) {
         return true;
     }
     return false;
-}
-
-static bool reopen_udp_socket(void) {
-    if (s_udp_socket >= 0) {
-        close(s_udp_socket);
-        s_udp_socket = -1;
-    }
-    s_udp_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if (s_udp_socket < 0) {
-        ESP_LOGW(TAG, "udp socket reopen failed errno=%d", errno);
-        return false;
-    }
-    return true;
-}
-
-static bool cam_stream_allowed(void) {
-    if (!s_udp_ready || s_udp_socket < 0) {
-        return false;
-    }
-#if APP_CAM_REQUIRE_CTRL_WS
-    if (!s_ctrl_ws_ready) {
-        return false;
-    }
-#endif
-    int64_t now_ms = esp_timer_get_time() / 1000;
-    return now_ms >= s_udp_pause_until_ms;
-}
-
-static void drain_frame_queue(void) {
-    if (!s_frame_q) {
-        return;
-    }
-    fb_ptr_t fb = NULL;
-    while (xQueueReceive(s_frame_q, &fb, 0) == pdPASS) {
-        if (fb) {
-            esp_camera_fb_return(fb);
-        }
-    }
-}
-
-static void note_udp_send_success(void) {
-    s_consecutive_send_fail = 0;
-}
-
-static void note_udp_send_failure(int last_errno) {
-    uint32_t fails = ++s_consecutive_send_fail;
-    if (last_errno == ENOMEM || fails >= APP_CAM_UDP_FAIL_REOPEN_TH) {
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        s_udp_pause_until_ms = now_ms + APP_CAM_UDP_FAIL_COOLDOWN_MS;
-        ESP_LOGW(TAG, "udp backoff %dms after errno=%d consecutive=%" PRIu32,
-                 APP_CAM_UDP_FAIL_COOLDOWN_MS, last_errno, fails);
-        drain_frame_queue();
-        (void)reopen_udp_socket();
-    }
 }
 
 static void update_latest_jpeg(const uint8_t *buf, size_t len) {
@@ -320,7 +264,7 @@ static void cam_capture_task(void *arg) {
     TickType_t last_tick = xTaskGetTickCount();
 
     while (1) {
-        if (s_snapshot_in_progress || !cam_stream_allowed()) {
+        if (s_snapshot_in_progress || !s_udp_ready) {
             vTaskDelay(pdMS_TO_TICKS(20));
             last_tick = xTaskGetTickCount();
             continue;
@@ -360,7 +304,7 @@ static void cam_capture_task(void *arg) {
 }
 
 static bool cam_udp_send_frame(camera_fb_t *fb) {
-    if (!fb || !cam_stream_allowed() || fb->len == 0) {
+    if (!fb || !s_udp_ready || s_udp_socket < 0 || fb->len == 0) {
         return false;
     }
 
@@ -430,7 +374,6 @@ static bool cam_udp_send_frame(camera_fb_t *fb) {
         }
         if (sent != (ssize_t)(sizeof(hdr) + payload_len)) {
             s_udp_send_fail_count++;
-            note_udp_send_failure(last_errno);
             ESP_LOGW(TAG, "udp send failed frame=%" PRIu32 " chunk=%" PRIu32 "/%" PRIu32 " errno=%d sent=%d",
                      frame_id, i + 1, chunk_count_u32, last_errno, (int)sent);
             return false;
@@ -448,7 +391,6 @@ static bool cam_udp_send_frame(camera_fb_t *fb) {
     if (send_us > s_max_send_us) {
         s_max_send_us = send_us;
     }
-    note_udp_send_success();
     return true;
 }
 
@@ -532,8 +474,7 @@ static void cam_udp_send_task(void *arg) {
 
     while (1) {
         maybe_log_cam_stats();
-        if (!cam_stream_allowed()) {
-            drain_frame_queue();
+        if (!s_udp_ready) {
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -560,7 +501,6 @@ static void cam_ctrl_event_handler(void *handler_args, esp_event_base_t base, in
     }
     if (event_id == WEBSOCKET_EVENT_DISCONNECTED) {
         s_ctrl_ws_ready = false;
-        drain_frame_queue();
         ESP_LOGI(TAG, "camera_ctrl disconnected");
         return;
     }
@@ -585,8 +525,9 @@ static bool setup_udp_target(const char *backend_host) {
         s_udp_socket = -1;
     }
 
-    if (!reopen_udp_socket()) {
-        ESP_LOGE(TAG, "udp socket create failed");
+    s_udp_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (s_udp_socket < 0) {
+        ESP_LOGE(TAG, "udp socket create failed errno=%d", errno);
         return false;
     }
 
@@ -627,6 +568,7 @@ static void cam_ctrl_ws_task(void *arg) {
         vTaskDelete(NULL);
         return;
     }
+    s_udp_ready = true;
 
     snprintf(s_ctrl_uri, sizeof(s_ctrl_uri), "ws://%s:%d%s", s_backend_host, s_backend_port, APP_CAM_CTRL_WS_PATH);
     ESP_LOGI(TAG, "camera ctrl ws uri: %s", s_ctrl_uri);
@@ -651,9 +593,6 @@ static void cam_ctrl_ws_task(void *arg) {
 
     esp_websocket_register_events(s_ctrl_ws, WEBSOCKET_EVENT_ANY, cam_ctrl_event_handler, NULL);
     esp_websocket_client_start(s_ctrl_ws);
-    ESP_LOGI(TAG, "camera udp start delay %dms for websocket/audio warmup", APP_CAM_UDP_START_DELAY_MS);
-    vTaskDelay(pdMS_TO_TICKS(APP_CAM_UDP_START_DELAY_MS));
-    s_udp_ready = true;
 
     TickType_t last_force_restart = 0;
     while (1) {

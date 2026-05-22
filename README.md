@@ -15,18 +15,18 @@ For cross-chat continuity, read [WORK_CONTEXT.md](WORK_CONTEXT.md) first. It is 
 
 ## Current Stable Public Profile
 
-Verified on 2026-05-22 after flashing ESP32A on `COM22` and running a 100-second cloud test:
+Restored on 2026-05-22 to the earlier public-cloud baseline that was verified with ESP32A video and microphone both online:
 
 - Camera source: ESP32A UDP camera on `UDP 22345`
-- Camera profile: `HQVGA`, JPEG quality `40`, `4 fps`
-- UDP payload: `1400`
-- UDP chunk gap: `50 ms`
+- Camera profile: `QVGA`, JPEG quality `18`, `10 fps`
+- UDP payload: `1024`
+- UDP chunk gap: `8 ms`
 - Microphone: enabled, PCM16 mono 16 kHz to `WebSocket /ws_audio`
-- WebSocket ping interval/timeout: `60 s`
-- Cloud result: `complete_fps=4.0`, `avg_jpeg_bytes=3224`, `drop_ratio_10s=0.0`, `crc_errors=0`, `invalid_packets=0`
-- Audio result: `audio_last_rx_age_ms=97`
+- Microphone chunk: `20 ms`
+- Auto-tune fallback: JPEG quality `28`, `8 fps`
+- Earlier verified result: camera stayed around `9.99-10.05 fps` while `audio_last_rx_age_ms` stayed near `0-49 ms`
 
-This profile was chosen because higher public-video pressure caused ESP32A `sendto errno=12` and could drag down the microphone WebSocket. The current profile prioritizes stable video plus stable microphone over maximum resolution.
+This is the rollback baseline for the public demo. Do not replace it with the later `HQVGA/q40/4fps` recovery settings unless a fresh long-run test proves this restored profile is unstable again.
 
 ## Layout
 
@@ -60,12 +60,14 @@ Important cloud settings:
 
 ```dotenv
 AIGLASS_CAMERA_SOURCE=udp
-AIGLASS_CAMERA_CHAT_FRAMESIZE=HQVGA
-AIGLASS_CAMERA_CHAT_QUALITY=40
-AIGLASS_CAMERA_CHAT_FPS=4
-AIGLASS_CAMERA_NAV_FRAMESIZE=HQVGA
-AIGLASS_CAMERA_NAV_QUALITY=40
-AIGLASS_CAMERA_NAV_FPS=4
+AIGLASS_CAMERA_CHAT_FRAMESIZE=QVGA
+AIGLASS_CAMERA_CHAT_QUALITY=18
+AIGLASS_CAMERA_CHAT_FPS=10
+AIGLASS_CAMERA_NAV_FRAMESIZE=QVGA
+AIGLASS_CAMERA_NAV_QUALITY=18
+AIGLASS_CAMERA_NAV_FPS=10
+AIGLASS_CAMERA_AUTOTUNE_QUALITY=28
+AIGLASS_CAMERA_AUTOTUNE_FPS=8
 AIGLASS_AUDIO_WS_ENABLED=1
 AIGLASS_DISCOVERY_HOST=47.110.89.207
 ```
@@ -86,12 +88,12 @@ Expected serial signs:
 - `using backend fallback: 47.110.89.207:8765`
 - `camera udp target: 47.110.89.207:22345`
 - `camera_ctrl connected`
-- `framesize set to HQVGA`
-- `quality=40`
-- `target_fps=4`
+- `framesize set to QVGA`
+- `quality=18`
+- `target_fps=10`
 - `APP_WS_AUD: PDM RX ready @ 16000 Hz`
 - `APP_WS_AUD: ws connected`
-- Repeated stats like `sent_5s=20/21`, `fail_5s=0`
+- Repeated stats near `sent_5s=50/51`, `fail_5s=0`
 
 ## Flash ESP32B
 
@@ -115,7 +117,7 @@ Invoke-RestMethod http://47.110.89.207:8765/api/imu/status
 Pass criteria for the current public demo:
 
 - `/api/health` returns `OK`
-- `camera_udp_fps` is near `4`
+- `camera_udp_fps` or `complete_fps` is near `10`
 - `drop_ratio_10s` is low, ideally `0.0`
 - `crc_errors` and `invalid_packets` stay `0`
 - `audio_ws_enabled=true`

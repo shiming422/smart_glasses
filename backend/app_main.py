@@ -394,9 +394,10 @@ def _audio_ws_can_replace_active_owner(new_host: str) -> Tuple[bool, str]:
         age_text = "unknown" if last_age is None else f"{last_age:.2f}s"
         return True, f"stale_owner:{age_text}"
 
+    extra = ""
     if new_host and esp32_audio_client_host and new_host == esp32_audio_client_host:
-        return True, f"duplicate_host:{new_host}, age={last_age:.2f}s"
-    return False, f"active_owner={esp32_audio_client_id}, age={last_age:.2f}s"
+        extra = ", duplicate_host"
+    return False, f"active_owner={esp32_audio_client_id}, age={last_age:.2f}s{extra}"
 
 esp32_camera_ws: Optional[WebSocket] = None
 esp32_camera_client_id: str = ""
@@ -2359,21 +2360,9 @@ async def ws_audio(ws: WebSocket):
     last_ts = time.monotonic()
     last_guard_log_ts = 0.0
     keepalive_task: Optional[asyncio.Task] = None
-    audio_send_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=3)
-    audio_send_task: Optional[asyncio.Task] = None
 
     async def stop_rec(send_notice: Optional[str] = None):
-        nonlocal recognition, streaming, keepalive_task, audio_send_task
-        current_task = asyncio.current_task()
-        if audio_send_task and audio_send_task is not current_task and not audio_send_task.done():
-            audio_send_task.cancel()
-            try: await audio_send_task
-            except asyncio.CancelledError: pass
-            except Exception: pass
-        audio_send_task = None
-        while not audio_send_q.empty():
-            try: audio_send_q.get_nowait()
-            except asyncio.QueueEmpty: break
+        nonlocal recognition, streaming, keepalive_task
         if keepalive_task and not keepalive_task.done():
             keepalive_task.cancel()
             try: await keepalive_task
@@ -2401,10 +2390,8 @@ async def ws_audio(ws: WebSocket):
                 idle = time.monotonic() - last_ts
                 if idle > 0.35:
                     try:
-                        def _send_silence():
-                            for _ in range(30):  # ~600ms 静音
-                                recognition.send_audio_frame(SILENCE_20MS)
-                        await asyncio.to_thread(_send_silence)
+                        for _ in range(30):  # ~600ms 静音
+                            recognition.send_audio_frame(SILENCE_20MS)
                         last_ts = time.monotonic()
                     except Exception:
                         await on_sdk_error("keepalive send failed")
@@ -2442,53 +2429,11 @@ async def ws_audio(ws: WebSocket):
             sample_rate=SAMPLE_RATE,
             callback=cb,
         )
-        await asyncio.to_thread(recognition.start)
+        recognition.start()
         await set_current_recognition(recognition)
         last_ts = time.monotonic()
         keepalive_task = asyncio.create_task(keepalive_loop())
         print("[AUDIO] ASR recognition started after first audio bytes", flush=True)
-
-    async def audio_sender_loop():
-        nonlocal last_ts
-        try:
-            while True:
-                pcm = await audio_send_q.get()
-                if pcm is None:
-                    return
-                if not AUDIO_WS_ENABLED or not streaming:
-                    continue
-                await start_recognition_if_needed()
-                if recognition is None:
-                    continue
-                try:
-                    await asyncio.to_thread(recognition.send_audio_frame, pcm)
-                    last_ts = time.monotonic()
-                except Exception:
-                    await on_sdk_error("send_audio_frame failed")
-                    return
-        except asyncio.CancelledError:
-            return
-
-    def ensure_audio_sender():
-        nonlocal audio_send_task
-        if audio_send_task is None or audio_send_task.done():
-            audio_send_task = asyncio.create_task(audio_sender_loop())
-
-    def enqueue_audio_frame(pcm: bytes) -> None:
-        if not pcm:
-            return
-        ensure_audio_sender()
-        try:
-            audio_send_q.put_nowait(pcm)
-        except asyncio.QueueFull:
-            try:
-                audio_send_q.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                audio_send_q.put_nowait(pcm)
-            except asyncio.QueueFull:
-                pass
 
     disconnect_reason = "client_closed"
 
@@ -2523,17 +2468,14 @@ async def ws_audio(ws: WebSocket):
                         continue
                     streaming = True
                     last_ts = time.monotonic()
-                    ensure_audio_sender()
                     await ui_broadcast_partial("（等待音频…）")
                     await ws.send_text("OK:STARTED")
 
                 elif cmd == "STOP":
                     if recognition:
-                        def _send_stop_silence():
-                            for _ in range(15):  # ~300ms 静音
-                                recognition.send_audio_frame(SILENCE_20MS)
-                        try: await asyncio.to_thread(_send_stop_silence)
-                        except Exception: pass
+                        for _ in range(15):  # ~300ms 静音
+                            try: recognition.send_audio_frame(SILENCE_20MS)
+                            except Exception: break
                     await stop_rec(send_notice="OK:STOPPED")
 
                 elif raw.startswith("PROMPT:"):
@@ -2558,7 +2500,12 @@ async def ws_audio(ws: WebSocket):
                             print(f"[ASR GUARD] dropping mic frame during tail window, remain={remain_ms}ms", flush=True)
                             last_guard_log_ts = now
                         continue
-                    enqueue_audio_frame(msg["bytes"])
+                    await start_recognition_if_needed()
+                    try:
+                        recognition.send_audio_frame(msg["bytes"])
+                        last_ts = now
+                    except Exception:
+                        await on_sdk_error("send_audio_frame failed")
 
     except Exception as e:
         disconnect_reason = f"ws_error:{e}"
