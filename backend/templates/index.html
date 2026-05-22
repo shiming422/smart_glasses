@@ -43,16 +43,34 @@
   #navOverlayCanvas{
     position:absolute;inset:0;width:100%;height:100%;display:block;z-index:12;pointer-events:none;
   }
+  .viewer-scale-panel{
+    position:absolute;right:12px;top:12px;z-index:45;
+    display:flex;align-items:center;gap:8px;
+    max-width:min(360px, calc(100% - 24px));
+    padding:8px 10px;border:1px solid rgba(255,255,255,.14);border-radius:12px;
+    background:rgba(18,24,33,.78);backdrop-filter:blur(8px) saturate(140%);
+    box-shadow:0 10px 24px rgba(0,0,0,.36);
+  }
+  .viewer-scale-label,.viewer-scale-value{
+    color:var(--muted);font-size:12px;font-weight:700;white-space:nowrap;
+  }
+  .viewer-scale-value{min-width:44px;text-align:right;color:var(--text)}
+  #viewerScaleRange{
+    width:150px;accent-color:#2f86ff;cursor:pointer;
+  }
+  .viewer-scale-reset{
+    padding:5px 8px;border-radius:8px;font-size:12px;line-height:1.2;
+  }
 
   .imu-float{
     position:absolute;left:12px;top:12px;z-index:35;
-    width:min(620px, calc(100% - 24px));max-width:calc(100% - 24px);
-    min-width:360px;min-height:220px;max-height:calc(100% - 24px);
+    width:min(620px, calc(100% - 24px));height:260px;max-width:calc(100% - 24px);
+    min-width:280px;min-height:190px;max-height:calc(100% - 24px);
     display:flex;flex-direction:column;
     border:2px dashed rgba(255,255,255,.35);border-radius:12px;
     background:var(--panel);backdrop-filter:blur(8px) saturate(130%);
     box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);padding:8px;
-    resize:both;overflow:hidden;
+    resize:none;overflow:hidden;
   }
   .imu-drag-handle{
     display:flex;align-items:center;justify-content:space-between;
@@ -62,6 +80,17 @@
     letter-spacing:.2px;cursor:grab;user-select:none;touch-action:none;
   }
   .imu-float.dragging .imu-drag-handle{cursor:grabbing}
+  .imu-float.resizing{user-select:none}
+  .imu-resize-handle{
+    position:absolute;right:3px;bottom:3px;z-index:4;
+    width:22px;height:22px;border:none;background:transparent;padding:0;
+    cursor:nwse-resize;touch-action:none;
+  }
+  .imu-resize-handle::before{
+    content:"";position:absolute;right:3px;bottom:3px;width:12px;height:12px;
+    border-right:2px solid rgba(255,255,255,.7);border-bottom:2px solid rgba(255,255,255,.7);
+    box-shadow:4px 4px 0 -2px rgba(47,134,255,.9);
+  }
   .imu-row{display:grid;grid-template-columns:1.45fr .95fr;gap:10px;align-items:stretch;flex:1;min-height:0}
   #imu_view{position:relative;min-height:160px;background:#0a1017;border-radius:10px}
   #imu_hud{
@@ -140,6 +169,12 @@
 <div class="app" id="appLayout">
   <section class="stage" id="stage">
     <div class="canvas-wrap" id="canvasWrap"><canvas id="canvas"></canvas><canvas id="navOverlayCanvas"></canvas></div>
+    <div class="viewer-scale-panel" aria-label="视频预览缩放">
+      <span class="viewer-scale-label">画面</span>
+      <input id="viewerScaleRange" type="range" min="50" max="220" step="5" value="100" aria-label="视频预览缩放比例" />
+      <span id="viewerScaleValue" class="viewer-scale-value">100%</span>
+      <button id="viewerScaleReset" class="viewer-scale-reset ghost" type="button" title="重置视频预览比例">重置</button>
+    </div>
 
     <div class="imu-float">
       <div class="imu-drag-handle" id="imu_drag_handle">
@@ -155,6 +190,7 @@
         <span class="badge">Browser WS: <code>/ws</code></span>
         <span class="badge" id="imu_ws_state">connecting...</span>
       </div>
+      <button class="imu-resize-handle" id="imu_resize_handle" type="button" title="拖动缩放 IMU 面板" aria-label="拖动缩放 IMU 面板"></button>
     </div>
   </section>
 
@@ -240,6 +276,6 @@
   "imports": { "three": "https://unpkg.com/three@0.155.0/build/three.module.js" }
 }</script>
 
-<script type="module" src="/static/main.js?v=20260521-raw-nav-overlay-smooth"></script>
+<script type="module" src="/static/main.js?v=20260522-resizable-viewer"></script>
 </body>
 </html>

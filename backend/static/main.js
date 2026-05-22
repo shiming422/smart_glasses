@@ -28,14 +28,22 @@
   const $root = document.documentElement;
   const $stage = document.getElementById('stage');
   const $canvasWrap = document.getElementById('canvasWrap');
+  const $viewerScaleRange = document.getElementById('viewerScaleRange');
+  const $viewerScaleValue = document.getElementById('viewerScaleValue');
+  const $viewerScaleReset = document.getElementById('viewerScaleReset');
   const canvas     = document.getElementById('canvas');
   const ctx        = canvas.getContext('2d');
   const navOverlayCanvas = document.getElementById('navOverlayCanvas');
   const navCtx = navOverlayCanvas ? navOverlayCanvas.getContext('2d') : null;
   const DEFAULT_VIEWER_RAW_WIDTH = 720;
   const DEFAULT_VIEWER_RAW_HEIGHT = 1280;
-  const VIEWER_MAX_SCALE = 1.55;
+  const VIEWER_AUTO_MAX_SCALE = 1.55;
+  const VIEWER_ABSOLUTE_MAX_SCALE = 3.6;
+  const VIEWER_MANUAL_MIN_SCALE = 0.5;
+  const VIEWER_MANUAL_MAX_SCALE = 2.2;
+  const VIEWER_SCALE_STORAGE_KEY = 'aiglass.viewer.manualScale';
   const NAV_OVERLAY_STALE_MS = 2500;
+  let viewerManualScale = loadViewerManualScale();
 
   // === 获取/创建聊天容器（关键补丁） ===
   let chatContainer = document.getElementById('chatContainer');
@@ -372,6 +380,43 @@
     cssHeight: DEFAULT_VIEWER_RAW_WIDTH,
   };
 
+  function clampNumber(value, min, max, fallback){
+    if (value === null || value === undefined || value === '') return fallback;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  }
+
+  function loadViewerManualScale(){
+    try {
+      const stored = window.localStorage && window.localStorage.getItem(VIEWER_SCALE_STORAGE_KEY);
+      return clampNumber(stored, VIEWER_MANUAL_MIN_SCALE, VIEWER_MANUAL_MAX_SCALE, 1);
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  function saveViewerManualScale(){
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(VIEWER_SCALE_STORAGE_KEY, String(viewerManualScale));
+      }
+    } catch (_) {}
+  }
+
+  function updateViewerScaleControl(){
+    const percent = Math.round(viewerManualScale * 100);
+    if ($viewerScaleRange) $viewerScaleRange.value = String(percent);
+    if ($viewerScaleValue) $viewerScaleValue.textContent = `${percent}%`;
+  }
+
+  function setViewerManualScale(scale, persist=true){
+    viewerManualScale = clampNumber(scale, VIEWER_MANUAL_MIN_SCALE, VIEWER_MANUAL_MAX_SCALE, 1);
+    updateViewerScaleControl();
+    if (persist) saveViewerManualScale();
+    updateViewerDisplaySize();
+  }
+
   function syncViewerCanvasSize(){
     if (canvas.width !== viewerLayout.displayWidth || canvas.height !== viewerLayout.displayHeight) {
       canvas.width = viewerLayout.displayWidth;
@@ -388,7 +433,14 @@
     const nativeHeight = Math.max(1, viewerLayout.displayHeight | 0);
     const availableWidth = Math.max(1, (($stage && $stage.clientWidth) || nativeWidth) - 16);
     const availableHeight = Math.max(1, (($stage && $stage.clientHeight) || nativeHeight) - 16);
-    const scale = Math.min(VIEWER_MAX_SCALE, availableWidth / nativeWidth, availableHeight / nativeHeight);
+    const autoScale = Math.min(VIEWER_AUTO_MAX_SCALE, availableWidth / nativeWidth, availableHeight / nativeHeight);
+    const minScale = Math.max(0.08, autoScale * VIEWER_MANUAL_MIN_SCALE);
+    const scale = clampNumber(
+      autoScale * viewerManualScale,
+      minScale,
+      VIEWER_ABSOLUTE_MAX_SCALE,
+      autoScale
+    );
     const cssWidth = Math.max(1, Math.round(nativeWidth * scale));
     const cssHeight = Math.max(1, Math.round(nativeHeight * scale));
 
@@ -429,6 +481,15 @@
   }
 
   setViewerLayout(DEFAULT_VIEWER_RAW_WIDTH, DEFAULT_VIEWER_RAW_HEIGHT);
+  updateViewerScaleControl();
+  if ($viewerScaleRange) {
+    $viewerScaleRange.addEventListener('input', () => {
+      setViewerManualScale(Number($viewerScaleRange.value) / 100);
+    });
+  }
+  if ($viewerScaleReset) {
+    $viewerScaleReset.addEventListener('click', () => setViewerManualScale(1));
+  }
   if ('ResizeObserver' in window && $stage) {
     const resizeObserver = new ResizeObserver(() => scheduleViewerDisplayResize());
     resizeObserver.observe($stage);
@@ -830,7 +891,7 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     drawNavOverlay();
     camDebug.rawSize = `${srcW}x${srcH}`;
-    camDebug.displaySize = `${viewerLayout.cssWidth}x${viewerLayout.cssHeight} (native ${viewerLayout.displayWidth}x${viewerLayout.displayHeight})`;
+    camDebug.displaySize = `${viewerLayout.cssWidth}x${viewerLayout.cssHeight} (${Math.round(viewerManualScale * 100)}%, native ${viewerLayout.displayWidth}x${viewerLayout.displayHeight})`;
   }
 
   async function renderLatestFrame(){
@@ -1130,6 +1191,8 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
   // 左右窗口统一半透明底色
   const imuFloat = document.querySelector('.imu-float');
   const imuHandle = document.getElementById('imu_drag_handle');
+  const imuResizeHandle = document.getElementById('imu_resize_handle');
+  let requestModelSync = () => {};
 
   function enableImuFloatDrag() {
     if (!imuFloat || !imuHandle) return;
@@ -1140,6 +1203,10 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
     let pointerId = null;
     let startX = 0, startY = 0;
     let startLeft = 0, startTop = 0;
+    let resizing = false;
+    let resizePointerId = null;
+    let startWidth = 0, startHeight = 0;
+    let resizeStartLeft = 0, resizeStartTop = 0;
 
     function clampIntoStage() {
       const stage = getStage();
@@ -1200,12 +1267,74 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
       clampIntoStage();
     }
 
+    function onResizePointerDown(ev) {
+      if (!imuResizeHandle) return;
+      if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+      const stage = getStage();
+      if (!stage) return;
+
+      const stageRect = stage.getBoundingClientRect();
+      const floatRect = imuFloat.getBoundingClientRect();
+      resizeStartLeft = floatRect.left - stageRect.left;
+      resizeStartTop = floatRect.top - stageRect.top;
+      startWidth = imuFloat.offsetWidth;
+      startHeight = imuFloat.offsetHeight;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      resizing = true;
+      resizePointerId = ev.pointerId;
+      imuFloat.classList.add('resizing');
+      imuResizeHandle.setPointerCapture(resizePointerId);
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+
+    function onResizePointerMove(ev) {
+      if (!resizing || ev.pointerId !== resizePointerId) return;
+      const stage = getStage();
+      if (!stage) return;
+
+      const minWidth = 280;
+      const minHeight = 190;
+      const maxWidth = Math.max(minWidth, stage.clientWidth - resizeStartLeft);
+      const maxHeight = Math.max(minHeight, stage.clientHeight - resizeStartTop);
+      const nextWidth = clamp(startWidth + (ev.clientX - startX), minWidth, maxWidth);
+      const nextHeight = clamp(startHeight + (ev.clientY - startY), minHeight, maxHeight);
+      imuFloat.style.width = `${Math.round(nextWidth)}px`;
+      imuFloat.style.height = `${Math.round(nextHeight)}px`;
+      imuFloat.style.right = 'auto';
+      imuFloat.style.bottom = 'auto';
+      requestModelSync();
+      ev.preventDefault();
+    }
+
+    function stopResize(ev) {
+      if (!resizing || ev.pointerId !== resizePointerId) return;
+      resizing = false;
+      imuFloat.classList.remove('resizing');
+      if (imuResizeHandle && imuResizeHandle.hasPointerCapture(resizePointerId)) {
+        imuResizeHandle.releasePointerCapture(resizePointerId);
+      }
+      resizePointerId = null;
+      clampIntoStage();
+      requestModelSync();
+    }
+
     imuHandle.addEventListener('pointerdown', onPointerDown);
     imuHandle.addEventListener('pointermove', onPointerMove);
     imuHandle.addEventListener('pointerup', stopDrag);
     imuHandle.addEventListener('pointercancel', stopDrag);
+    if (imuResizeHandle) {
+      imuResizeHandle.addEventListener('pointerdown', onResizePointerDown);
+      imuResizeHandle.addEventListener('pointermove', onResizePointerMove);
+      imuResizeHandle.addEventListener('pointerup', stopResize);
+      imuResizeHandle.addEventListener('pointercancel', stopResize);
+    }
     if ('ResizeObserver' in window) {
-      const resizeObserver = new ResizeObserver(() => clampIntoStage());
+      const resizeObserver = new ResizeObserver(() => {
+        clampIntoStage();
+        requestModelSync();
+      });
       resizeObserver.observe(imuFloat);
     }
     window.addEventListener('resize', clampIntoStage);
@@ -1279,24 +1408,14 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
   let syncRaf = 0;
   function syncHeights() {
     if (!container || !hud) return;
-    const w = container.clientWidth || 600;
-  
-    // 可选：固定高宽比（例如 const MODEL_ASPECT = 16/9;）
-    // 如果保持 null，就以右侧面板高度为准
-    const MODEL_ASPECT = null;
-  
-    let targetH;
-    if (MODEL_ASPECT && Number(MODEL_ASPECT) > 0) {
-      targetH = Math.max(240, Math.round(w / Number(MODEL_ASPECT)));
-    } else {
-      const padding = 40; // 右侧内边距/标题余量
-      const contentH = (document.getElementById('data-panel')?.offsetHeight || 0) + padding;
-      targetH = Math.max(240, contentH);
-    }
+    const row = imuFloat ? imuFloat.querySelector('.imu-row') : null;
+    const w = Math.max(1, container.clientWidth || 600);
+    const contentH = (document.getElementById('data-panel')?.offsetHeight || 0) + 40;
+    const targetH = Math.max(120, row && row.clientHeight ? row.clientHeight : contentH);
   
     hud.style.height = `${targetH}px`;
     hud.style.maxHeight = 'none';
-    hud.style.overflow = 'hidden';
+    hud.style.overflow = 'auto';
   
     container.style.height = `${targetH}px`;
     renderer.setSize(w, targetH);
@@ -1310,6 +1429,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
   }
   
   // 初次与窗口变化时，同步左右高度
+  requestModelSync = requestSync;
   requestSync();
   window.addEventListener('resize', requestSync);
   
