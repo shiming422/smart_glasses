@@ -30,7 +30,7 @@
 
 // Board role: video + microphone uplink.
 // Audio playback and IMU live on the separate esp32_audio_imu firmware.
-#define APP_MIC_UPLINK_ENABLE 0
+#define APP_MIC_UPLINK_ENABLE 1
 
 // Backend config. Product/demo firmware should prefer the public fallback when
 // it is configured, so LAN discovery cannot hijack the board away from cloud.
