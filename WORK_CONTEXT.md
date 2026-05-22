@@ -1,10 +1,41 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-21 18:18 Asia/Shanghai
+Last updated: 2026-05-22 10:56 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
 User requirement: this workspace must be kept under Git so changes can be rolled back later. Any Codex chat that makes meaningful firmware/backend/context changes should update this file, then create a Git commit with a clear message.
+
+## Current Source Of Truth: Public Cloud Demo
+
+The current product/demo direction is **public-cloud-first**, not local-PC-first.
+
+- Public backend URL: `http://47.110.89.207:8765/`
+- Public health URL: `http://47.110.89.207:8765/api/health`
+- Cloud server: Alibaba Cloud ECS at `47.110.89.207`
+- Cloud backend path: `/root/smart_glasses_esp32_workspace/backend`
+- Cloud compose file: `/root/smart_glasses_esp32_workspace/backend/docker-compose.cloud.yml`
+- Cloud container: `aiglass`
+- Cloud image currently running: `aiglass-backend:cpu-cloud`
+- SSH key used from this PC: `C:\Users\shiming\.ssh\aliyun_smart_glasses_ed25519`
+- Cloud service command: `cd /root/smart_glasses_esp32_workspace/backend && docker compose -f docker-compose.cloud.yml up -d`
+- Published cloud ports: TCP `8765`; UDP `22345` camera; UDP `12345` IMU; UDP `54321` discovery.
+
+Current verified cloud status on 2026-05-22 10:56:
+
+- `GET /api/health` returned `OK`.
+- `docker compose -f docker-compose.cloud.yml ps` showed container `aiglass` up and healthy.
+- Cloud camera source is currently `AIGLASS_CAMERA_SOURCE=udp`, not the local Windows external C++ gateway. `/api/camera/stats` reported `protocol=udp`, `camera_source_name=esp32_udp`, `complete_fps=10.1`, `avg_jpeg_bytes=4372`, `ctrl_clients=1`, and `ctrl_last_command=SET:FPS=10`.
+- ESP32B IMU is live through the cloud path: `/api/imu/status` reported `ws_in_clients=1` and `ws_in_packets=27299`.
+- Audio/mic is currently not the active focus: `/api/test/status` had empty `audio_client` and no recent `audio_last_rx_age_ms`. Earlier performance work intentionally muted/disabled speaker playback for the current demo baseline.
+- Frontend at the public URL has manual camera preview scaling (`50%` to `220%`) and a bottom-right resize handle for the IMU/glasses model panel. `index.html` cache-busts `main.js` with `v=20260522-resizable-viewer`.
+
+Important operating rule:
+
+- ESP32A and ESP32B should be able to join **any Wi-Fi with public internet access** and still use the product because firmware has public backend fallback to `47.110.89.207:8765` after LAN discovery times out.
+- LAN UDP discovery on `54321` is now a development convenience for local testing, not the required product path.
+- Other Codex windows should inspect this file first, then verify the current cloud state with `/api/health`, `/api/camera/stats`, `/api/imu/status`, and `/api/test/status` before changing performance settings.
+- Do not commit private runtime files such as `backend/.env`, firmware `secrets.h`, `wifi_profile.h`, model caches, build outputs, or runtime logs.
 
 ## Clean Workspace
 
@@ -25,10 +56,11 @@ Original source status:
 
 ## Wi-Fi / LAN Rule
 
-- Current PC Wi-Fi observed on 2026-05-20: `TP-LINK_5G_6C93` on `5 GHz`, WLAN IPv4 `192.168.1.106`.
-- ESP32 hardware must use the same router's 2.4 GHz SSID: `TP-LINK_6C93`.
-- Both ESP32 local private config files should target `TP-LINK_6C93`; committed defaults/examples use placeholders, and real Wi-Fi passwords/API keys stay ignored locally.
-- Backend discovery assumes the PC and both ESP32 boards are on the same LAN; backend UDP `54321` should reply with the PC LAN/Wi-Fi IP reachable from `TP-LINK_6C93`.
+- Product/demo mode: ESP32 hardware can use any Wi-Fi that reaches the public internet; both boards should fall back to public backend `47.110.89.207:8765` if LAN discovery does not answer.
+- Local lab mode observed on 2026-05-20: PC Wi-Fi `TP-LINK_5G_6C93` on `5 GHz`, WLAN IPv4 `192.168.1.106`; ESP32 hardware used sibling 2.4 GHz SSID `TP-LINK_6C93`.
+- Local private config files may still target `TP-LINK_6C93` for bench testing, but the product expectation is no longer tied to this one router.
+- Committed defaults/examples use placeholders, and real Wi-Fi passwords/API keys stay ignored locally.
+- LAN backend discovery assumes the PC and both ESP32 boards are on the same LAN; backend UDP `54321` should reply with the PC LAN/Wi-Fi IP reachable from the ESP32 network. On the cloud path, `docker-compose.cloud.yml` advertises `AIGLASS_DISCOVERY_HOST=47.110.89.207`.
 
 ### ESP32A: Video + Microphone Uplink
 
@@ -38,7 +70,7 @@ Clean copy: `E:\Desktop\smart_glasses_esp32_workspace\esp32_video_mic`
 
 Current role:
 
-- Discovers backend IP automatically via UDP broadcast on `54321`.
+- Discovers backend IP automatically via UDP broadcast on `54321`, then uses public fallback `47.110.89.207:8765` if discovery times out.
 - Camera uploads JPEG latest-frame stream to backend `UDP 22345`; each frame is split into 1024-byte UDP payload chunks with the 32-byte little-endian `AIGC` header and CRC32.
 - Camera WebSocket is no longer the main video path. A lightweight control channel connects to `ws://<discovered-backend>:8765/ws/camera_ctrl`.
 - PDM microphone uploads PCM16 mono 16 kHz chunks to `ws://<discovered-backend>:8765/ws_audio`.
@@ -53,14 +85,14 @@ Changes already made in the clean copy:
 - `main/inc/sys_config.h` no longer has a hardcoded backend host; the stable backend HTTP/WebSocket port remains `8765`.
 - Camera UDP sender, camera control WebSocket, and microphone WebSocket clients now wait for discovered backend host before connecting.
 - `main/src/app_stream_cam.c` now uses three pinned tasks: `cam_capture_task` on core 0, `cam_udp_send_task` on core 1, and `cam_ctrl_ws_task` on core 1. Camera queue depth is fixed at `1`; sending aborts an old frame if a newer frame is already waiting.
-- A-board camera defaults are `FRAMESIZE_VGA`, `CAMERA_JPEG_QUAL=24`, `APP_CAM_DEFAULT_FPS=10`, `APP_CAM_UDP_PAYLOAD=1024`, and `APP_CAM_UDP_PORT=22345`.
+- A-board camera defaults are currently `FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=18`, `APP_CAM_DEFAULT_FPS=10`, `APP_CAM_UDP_PAYLOAD=1024`, and `APP_CAM_UDP_PORT=22345` for the public demo quality/stability balance.
 - Control commands kept for backend mode linkage: `SET:FPS=...`, `SET:QUALITY=...`, and `SET:FRAMESIZE=...`.
 - `APP_WAV_STREAM_ENABLE` is `0`, so this board does not pull backend audio playback.
 - `main/CMakeLists.txt` no longer compiles local HTTP, TTS, or IMU modules for this board.
 
 Configuration rule:
 
-- For ESP32A normal use, copy `main/inc/secrets.example.h` to `main/inc/secrets.h`, then edit Wi-Fi SSID/password and API key locally. Backend IP should be discovered automatically as long as the backend responder is running on the same LAN.
+- For ESP32A normal use, copy `main/inc/secrets.example.h` to `main/inc/secrets.h`, then edit Wi-Fi SSID/password and API key locally. Backend IP should be discovered automatically on LAN or fall back to the public ECS backend when LAN discovery is unavailable.
 
 ### ESP32B: Audio Playback + IMU Upload
 
@@ -74,7 +106,7 @@ Current role:
 - Does not initialize I2S speaker output and does not pull `http://<backend>:8765/stream.wav` while that switch is `0`.
 - Uploads ICM42688 posture JSON to backend UDP `12345`.
 - Current working-tree source also includes an IMU WebSocket uplink option to backend `ws://<backend>:8765/ws/imu_in`, with UDP `12345` as fallback if the WebSocket path is unavailable.
-- Uses UDP broadcast discovery on `54321` with request `AIGLASS_DISCOVER`; backend should reply `AIGLASS_HOST:<ip>`.
+- Uses UDP broadcast discovery on `54321` with request `AIGLASS_DISCOVER`; backend should reply `AIGLASS_HOST:<ip>`. If LAN discovery times out, it should use public fallback `47.110.89.207:8765`.
 - Camera and mic uplink are intentionally disabled: `ENABLE_CAMERA=0`, `ENABLE_MIC_UPLINK=0`.
 
 Changes already made in the clean copy:
@@ -93,17 +125,20 @@ Backend project currently lives at:
 
 Docker runtime after workspace unification:
 
-- Image: `aiglass-backend:local`
-- Container: `aiglass`
-- Frontend URL: `http://127.0.0.1:8765/`
-- Health URL: `http://127.0.0.1:8765/api/health`
-- Compose file: `backend\docker-compose.yml`
-- Docker port mapping must include TCP `8765`, TCP `22346`, UDP `12345`, and UDP `54321`. In the current Windows-host external C++ gateway mode, host UDP `22345` is owned by `backend\cpp_gateway\aiglass_cam_gateway.exe`, not by Docker. Docker UDP `22345` is only for managed/container or Python UDP fallback tests.
+- Public cloud image: `aiglass-backend:cpu-cloud`
+- Public cloud container: `aiglass`
+- Public cloud frontend URL: `http://47.110.89.207:8765/`
+- Public cloud health URL: `http://47.110.89.207:8765/api/health`
+- Public cloud compose file: `/root/smart_glasses_esp32_workspace/backend/docker-compose.cloud.yml`
+- Public cloud port mapping must include TCP `8765`, UDP `22345`, UDP `12345`, and UDP `54321`. The current cloud path uses Python UDP camera ingest directly inside Docker (`AIGLASS_CAMERA_SOURCE=udp`), so no Windows C++ gateway process is required for the deployed server.
+- Local development frontend URL: `http://127.0.0.1:8765/`
+- Local development compose file: `backend\docker-compose.yml`
+- Local Windows C++ gateway mode is an optional LAN optimization path. In that mode, host UDP `22345` is owned by `backend\cpp_gateway\aiglass_cam_gateway.exe`, and Docker maps TCP `22346` for gateway-to-Python frame records.
 
 Required backend interfaces:
 
 - `GET /api/health`
-- `UDP 22345`: primary ESP32A fragmented JPEG latest-frame stream. In the current default path this port is bound on Windows by `backend\cpp_gateway\aiglass_cam_gateway.exe`, not by Python and not by the Docker container. Packet header is fixed little-endian, packed, 32 bytes: magic literal bytes `AIGC`, version `1`, header length `32`, source id `1`, frame id, timestamp ms, frame length, frame CRC32, chunk index/count, and payload length.
+- `UDP 22345`: primary ESP32A fragmented JPEG latest-frame stream. In the current public cloud path this port is published by Docker and consumed by Python UDP ingest. In optional local Windows C++ gateway mode, this port is bound by `backend\cpp_gateway\aiglass_cam_gateway.exe` instead. Packet header is fixed little-endian, packed, 32 bytes: magic literal bytes `AIGC`, version `1`, header length `32`, source id `1`, frame id, timestamp ms, frame length, frame CRC32, chunk index/count, and payload length.
 - `TCP 22346`: C++ gateway to Python record stream. In external gateway mode Python listens on `0.0.0.0:22346` inside Docker and Docker maps it to the host; the Windows C++ gateway connects to `127.0.0.1:22346`. Header is fixed little-endian 32 bytes with magic literal bytes `AIGF`, version `1`, type `1=jpeg` / `2=stats_json` / `3=heartbeat`, frame id, timestamp ms, payload length, and payload CRC32.
 - `WebSocket /ws/camera_ctrl`: ESP32A lightweight camera control channel. Backend sends profile commands for navigation/chat modes and UDP auto-downgrade.
 - `WebSocket /ws/camera`: binary JPEG frames from ESP32A, retained only as manual debug/fallback when `AIGLASS_CAMERA_SOURCE=ws` or `esp32_ws`.
@@ -119,10 +154,12 @@ Required backend interfaces:
 
 Backend `.env` items that must be checked before hardware testing:
 
+- Public cloud baseline: `docker-compose.cloud.yml` defaults `AIGLASS_CAMERA_SOURCE=udp`, `AIGLASS_CAMERA_UDP_PORT=22345`, `AIGLASS_UDP_PORT=12345`, `AIGLASS_DISCOVERY_PORT=54321`, and `AIGLASS_DISCOVERY_HOST=47.110.89.207`.
 - `AIGLASS_UDP_PORT` should be `12345` for the current ESP32B firmware.
 - `AIGLASS_DISCOVERY_PORT` should be `54321` for ESP32A/ESP32B backend discovery.
 - `AIGLASS_AUDIO_WS_ENABLED` should be `1` when testing ESP32A microphone upload.
-- `AIGLASS_CAMERA_SOURCE=cpp_gateway` is the default primary camera input.
+- `AIGLASS_CAMERA_SOURCE=udp` is the current public cloud primary camera input.
+- `AIGLASS_CAMERA_SOURCE=cpp_gateway` is the local Windows/LAN gateway optimization input.
 - `AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1`, `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, `AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`, `AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`, and `AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346` should be set for the current Windows-host C++ gateway path.
 - `AIGLASS_CAMERA_UDP_PORT=22345`, `AIGLASS_CAMERA_UDP_FRAME_TTL_MS=250`, and `AIGLASS_CAMERA_CTRL_WS_ENABLED=1` should be set for the A-board UDP transport.
 - `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=35` prevents transient gateway/A-board reconnect drops from immediately forcing a downshift during startup.
@@ -133,13 +170,15 @@ Backend `.env` items that must be checked before hardware testing:
 
 Fallback rule:
 
-- Normal operation should use `AIGLASS_CAMERA_SOURCE=cpp_gateway` with `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`; start the Windows host gateway executable after Docker is up.
-- If the C++ gateway path fails, switch backend local `.env` to `AIGLASS_CAMERA_SOURCE=udp` to use the old Python UDP reassembler.
+- Public normal operation should use `AIGLASS_CAMERA_SOURCE=udp` on the ECS server.
+- Local Windows performance testing may use `AIGLASS_CAMERA_SOURCE=cpp_gateway` with `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`; start the Windows host gateway executable after Docker is up.
+- If the local C++ gateway path fails, switch backend local `.env` to `AIGLASS_CAMERA_SOURCE=udp` to use the Python UDP reassembler.
 - If UDP camera testing fails completely, switch backend local `.env` to `AIGLASS_CAMERA_SOURCE=ws` and temporarily restore/use the legacy A-board `/ws/camera` path for debug only.
 
 Current frontend / blind-path runtime notes:
 
-- Backend serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` now cache-busts `main.js` with version `20260521-native-nav-overlay-flip`.
+- Backend serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` now cache-busts `main.js` with version `20260522-resizable-viewer`.
+- Frontend has a manual camera preview scale control (`50%` to `220%`, persisted in `localStorage`) and an explicit bottom-right resize handle for the IMU/glasses model panel.
 - Frontend preview still rotates the camera frame and flips it vertically for the current mounting direction, and the preview area is larger than the previous layout.
 - During navigation, `/ws/viewer` now uses the original backend blind-path drawing code (`BlindPathNavigator._draw_visualizations()` via `res.annotated_image`) rather than a frontend canvas recreation.
 - `/ws/nav_events` still sends structured navigation results (`type=nav_result`, mode, guidance, latency, camera sequence/frame id, timestamp, optional visualization metadata/state info), but frontend recognition drawing is intentionally disabled so it does not fight with the native annotated JPEG.
@@ -312,7 +351,7 @@ Historical first-hotfix validation below is kept for traceability and is superse
 - Cloud ECS hardware integration baseline completed.
 - Public backend is `47.110.89.207:8765`; browser/API access works from the PC. Security group currently allows demo TCP/UDP ingress. Cloud backend receives ESP32 traffic directly with `AIGLASS_CAMERA_SOURCE=udp`, camera UDP `22345`, IMU UDP `12345`, discovery UDP `54321`, and HTTP/WebSocket `8765`.
 - ESP32A `esp32_video_mic` now has a public backend fallback in ignored `main/inc/secrets.h`: `SEC_BACKEND_FALLBACK_HOST=47.110.89.207`, `SEC_BACKEND_FALLBACK_PORT=8765`. After LAN broadcast discovery times out, serial shows `using backend fallback: 47.110.89.207:8765`.
-- ESP32B `esp32_audio_imu` now has public fallback in ignored `wifi_profile.h`: `BACKEND_FALLBACK_HOST_VALUE=47.110.89.207`, and `ENABLE_SPEAKER_PLAYBACK=1` for full audio receive testing.
+- ESP32B `esp32_audio_imu` now has public fallback in ignored `wifi_profile.h`: `BACKEND_FALLBACK_HOST_VALUE=47.110.89.207`. Historical full audio receive tests used `ENABLE_SPEAKER_PLAYBACK=1`; the current quiet/performance baseline later set speaker playback back to `0`.
 - Firmware builds passed: ESP32A built with ESP-IDF 5.5.2 and produced `build/project-name.bin`; ESP32B built with local PlatformIO and produced `.pio/build/xiao_esp32s3/firmware.bin`.
 - Flashing passed: ESP32A flashed on `COM22`, MAC `98:a3:16:f7:01:9c`; ESP32B flashed on `COM30`, MAC `98:a3:16:f8:08:ac`. PlatformIO upload hit a Windows GBK progress output crash, so ESP32B was flashed successfully with direct `python -m esptool ... write-flash --no-progress`.
 - ESP32A serial/public video result: Wi-Fi RSSI around `-39` to `-44 dBm`; 5-second windows stayed around `cap_5s=50/51`, `sent_5s=50/51`, `fail_5s=0`, `avg_jpeg=7045-7077`, `avg_send_ms=3-4`, `fps=10`, `q=40`. Public `/api/camera/stats` showed real ESP32A packets from WAN address, `complete_fps=9.6-9.99`, `last_frame_age_ms=0-108`, `avg_jpeg_bytes=~7045`, `crc_errors=0`, `drop_ratio_10s=0.0`, `ctrl_clients=1`, `ctrl_last_command=SET:FPS=10`.
@@ -324,7 +363,7 @@ Historical first-hotfix validation below is kept for traceability and is superse
 - Backend optimization implemented locally after the cloud baseline: `AIGLASS_NAV_INFER_MIN_INTERVAL_MS` defaults to `750`, so navigation inference is latest-frame-only and rate-limited instead of trying to keep up with every camera frame. `/api/test/status` now reports `nav_infer_min_interval_ms`, source sequence, decode time, frame age, busy skips, and throttle skips. New `/api/perf/status` returns runtime, camera, and IMU status together.
 - `/stream.wav` now has idle-silence keepalive controlled by `AIGLASS_STREAM_IDLE_SILENCE=1` and `AIGLASS_STREAM_IDLE_SILENCE_MS=20`, so ESP32B should keep one continuous WAV stream instead of reconnecting whenever no TTS audio is queued.
 - Added `backend/docker-compose.cloud.yml` as the reproducible ECS deployment file. It uses `restart: unless-stopped`, maps TCP `8765` plus UDP `22345`, `12345`, and `54321`, defaults to `AIGLASS_CAMERA_SOURCE=udp`, and advertises `AIGLASS_DISCOVERY_HOST=47.110.89.207`. This is the file to use on the server for the always-on public backend.
-- Verification completed locally for the optimization patch: `python -m py_compile backend\app_main.py backend\audio_stream.py`, `docker compose config --quiet`, and `docker compose -f docker-compose.cloud.yml config --quiet` all passed. Direct ECS deploy was not completed in this window because SSH to `root@47.110.89.207` rejected the available local key with `Permission denied (publickey)`.
+- Historical verification note from an earlier window: `python -m py_compile backend\app_main.py backend\audio_stream.py`, `docker compose config --quiet`, and `docker compose -f docker-compose.cloud.yml config --quiet` all passed, but direct ECS deploy was not completed in that window because SSH rejected the then-available key. This is superseded by the current public cloud deployment section above; the server is now deployed and reachable.
 
 - External Windows C++ gateway fix completed after discovering Docker Desktop UDP `22345` published port did not deliver real LAN packets reliably to the container. Backend now supports `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, separates TCP bind host (`AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`) from gateway connect host (`AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`), and exposes TCP `22346`.
 - `backend\cpp_gateway\aiglass_cam_gateway.cpp` was ported to compile on both Linux and Windows sockets. Windows build passed with `C:\Users\shiming\mingw64\bin\g++.exe -O3 -std=c++17 -Wall -Wextra backend\cpp_gateway\aiglass_cam_gateway.cpp -lws2_32 -o backend\cpp_gateway\aiglass_cam_gateway.exe`.
@@ -384,6 +423,15 @@ Historical first-hotfix validation below is kept for traceability and is superse
 - Backend Docker still did not receive real ESP32A camera UDP frames on `22345` during this hardware flash test: `/api/camera/stats` remained at the earlier local injection frame id and packet counts, although `ctrl_clients=1` proved the A-board control WebSocket was connected. Windows firewall currently has rules for `8765/tcp`, `12345/udp`, and `54321/udp`, but no `22345/udp` rule; attempting to add `AIGlass-Camera-22345-UDP-In` failed with `Access is denied`. Next hardware validation needs an admin-added inbound UDP allow rule for local port `22345`, or a deliberate shared-port fallback design.
 - After the user added Windows firewall rule `AIGlass-Camera-22345-UDP-In` for inbound UDP local port `22345`, backend Docker started receiving real ESP32A camera UDP frames. `/api/camera/stats` showed `packets=8711`, `completed_frames=597`, `complete_fps=6.23`, `avg_jpeg_bytes=13792`, `last_frame_age_ms=25`, `camera_source_name=esp32_udp`, `ctrl_clients=1`, with `invalid_packets=0`, `crc_errors=0`, and `timeouts=0`.
 - A follow-up `/api/camera/stats` sample showed continued live frames: `completed_frames=1002`, `complete_fps=7.01`, `last_frame_age_ms=154`, `invalid_packets=0`, `crc_errors=0`. Backend auto-tuning had sent `SET:FPS=8` (`auto_level=1`) after the 10-second drop window rose, so the hardware/video path is live and the remaining optimization target is reducing incomplete/stale UDP chunks during sustained Wi-Fi traffic.
+
+2026-05-22 public cloud deployment sync:
+
+- The active demo backend is now deployed on Alibaba Cloud ECS at `47.110.89.207:8765`; do not assume the user is still only running a local PC backend.
+- Server path is `/root/smart_glasses_esp32_workspace/backend`; container `aiglass` is launched with `docker compose -f docker-compose.cloud.yml up -d` and verified healthy.
+- Cloud compose publishes TCP `8765` plus UDP `22345`, `12345`, and `54321`; `AIGLASS_DISCOVERY_HOST` defaults to `47.110.89.207`.
+- Current cloud camera path is Python UDP ingest (`AIGLASS_CAMERA_SOURCE=udp`, `protocol=udp`, `camera_source_name=esp32_udp`), not the local Windows C++ gateway. The C++ gateway remains useful for local LAN experiments, but it is not required for the current public server.
+- Current public hardware/product requirement: ESP32A/B can connect to any Wi-Fi with public internet, time out LAN discovery if needed, and use fallback backend `47.110.89.207:8765`.
+- Latest live sample at 2026-05-22 10:56: `/api/health=OK`; `/api/camera/stats` showed `complete_fps=10.1`, `avg_jpeg_bytes=4372`, `ctrl_clients=1`, `ctrl_last_command=SET:FPS=10`; `/api/imu/status` showed `ws_in_clients=1`, `ws_in_packets=27299`; `/api/test/status` showed mode `CHAT` and no active audio client.
 
 2026-05-22 frontend layout controls:
 
