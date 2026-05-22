@@ -24,7 +24,7 @@
 // 其他配置
 #define BUTTON_GPIO         0
 #define CAMERA_XCLK_FREQ_HZ 20000000
-#define CAMERA_JPEG_QUAL    20
+#define CAMERA_JPEG_QUAL    18
 #define CAMERA_FRAME_SIZE   FRAMESIZE_QVGA
 #define AI_TASK_STACK_SIZE  (1024 * 16)
 

@@ -222,17 +222,17 @@ Do not do yet:
 ## 2026-05-21 Public Cloud Smoothness Sweep
 
 - Voice is disabled for the current video demo path. ESP32A firmware sets `APP_MIC_UPLINK_ENABLE=0`; cloud compose/live `.env` set `AIGLASS_AUDIO_WS_ENABLED=0`, `AIGLASS_STREAM_IDLE_SILENCE=0`, and `ENABLE_TTS=false`.
-- Final deployed public-cloud demo profile is `QVGA`, `QUALITY=20`, `FPS=10` for both CHAT and blind navigation. Live ECS `.env` on `47.110.89.207` and `backend/docker-compose.cloud.yml` are aligned to that profile, with auto-tune fallback `QUALITY=28`, `FPS=8`, and `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=60`.
-- ESP32A firmware defaults now also match the final public profile: `CAMERA_FRAME_SIZE=FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=20`, `APP_CAM_DEFAULT_FPS=10`, `CAMERA_XCLK_FREQ_HZ=20000000`, UDP payload `1024`, chunk gap `8ms`, ENOMEM retry `8 * 12ms`.
+- Final deployed public-cloud demo profile is `QVGA`, `QUALITY=18`, `FPS=10` for both CHAT and blind navigation. Live ECS `.env` on `47.110.89.207` and `backend/docker-compose.cloud.yml` are aligned to that profile, with auto-tune fallback `QUALITY=28`, `FPS=8`, and `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=60`.
+- ESP32A firmware defaults now also match the final public profile: `CAMERA_FRAME_SIZE=FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=18`, `APP_CAM_DEFAULT_FPS=10`, `CAMERA_XCLK_FREQ_HZ=20000000`, UDP payload `1024`, chunk gap `8ms`, ENOMEM retry `8 * 12ms`.
 - ESP32A camera control now accepts additional low/intermediate frame sizes: `96X96`, `QQVGA`, `128X128`, `QCIF`, `HQVGA`, `240X240`, `320X320`, `CIF`, and `HVGA`, in addition to the older QVGA/VGA/SVGA/XGA/SXGA/UXGA set.
 - ESP32A serial stats now include `avg_cap_ms/max_cap_ms` and `avg_send_ms/max_send_ms`, so future tuning can distinguish camera capture bottleneck from UDP send bottleneck.
 - Backend UDP auto-tune now has a warmup guard for direct Python UDP mode too. When `/ws/camera_ctrl` reconnects or UDP frame ids reset after an ESP32A reboot, it clears the recent drop windows and suppresses immediate auto-downgrade for the warmup interval. This avoids boot/reconnect transients forcing a false downgrade.
 
 Sweep results:
 
-- Stable final: `QVGA q20 fps10`, XCLK `20MHz`, voice off. Cloud `/api/perf/status` showed `complete_fps=9.95`, `drop_ratio_10s=0.0099`, `last_frame_age_ms=6`, `auto_level=0`, and `audio_ws_enabled=false`. Browser `/ws/viewer` measured `539 frames / 55.11s = 9.78fps`, p50 gap `100.1ms`, p95 gap `174.5ms`, max gap `303.7ms`. ESP32A serial stabilized to repeated `50/51 sent_5s`, `fail_5s=0`, `avg_send_ms=1`.
-- Blind navigation validation on the final profile: `/api/test/control` `blind_nav` returned mode `BLINDPATH_NAV`; over 45s the test received `30` `nav_result` events and `0` nav errors, then `stop_nav` returned to `CHAT`. Viewer during navigation measured about `7.8fps` because CPU inference competes with preview scheduling, but recognition itself is alive.
-- Actual captured preview sample: `backend/runtime_logs/cloud_final_q20_fps10_raw.jpg` and oriented preview `backend/runtime_logs/cloud_final_q20_fps10_preview_oriented.jpg`. The sample scene was very dark, so visual clarity should be judged again with the camera aimed at a bright target.
+- Stable final: `QVGA q18 fps10`, XCLK `20MHz`, voice off. Cloud `/api/perf/status` showed `complete_fps=10.02`, `drop_ratio_10s=0.0`, `last_frame_age_ms=8`, `auto_level=0`, `audio_ws_enabled=false`, and `avg_jpeg_bytes≈2978`. Browser `/ws/viewer` measured `451 frames / 45.13s = 9.99fps`, p50 gap `100.4ms`, p95 gap `159.8ms`, max gap `320.3ms`. ESP32A serial stabilized to repeated `50/51 sent_5s`, `fail_5s=0`, `avg_send_ms=1`.
+- Blind navigation validation on the final profile: `/api/test/control` `blind_nav` returned mode `BLINDPATH_NAV`; over 35s the test received `23` `nav_result` events and `0` nav errors, then `stop_nav` returned to `CHAT`. Viewer during navigation measured about `9.81fps`, and recognition itself is alive.
+- Actual captured preview sample: `backend/runtime_logs/cloud_q18_fps10_raw.jpg` and oriented preview `backend/runtime_logs/cloud_q18_fps10_preview_oriented.jpg`. The sample scene remains dim; visual clarity should be judged again with the camera aimed at a bright target.
 
 Rejected/near-edge profiles:
 
