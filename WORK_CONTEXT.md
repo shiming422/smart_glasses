@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-22 20:15 Asia/Shanghai
+Last updated: 2026-05-22 20:35 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -21,7 +21,7 @@ The current product/demo direction is **public-cloud-first**, not local-PC-first
 - Cloud service command: `cd /root/smart_glasses_esp32_workspace/backend && docker compose -f docker-compose.cloud.yml up -d`
 - Published cloud ports: TCP `8765`; UDP `22345` camera; UDP `12345` IMU; UDP `54321` discovery.
 
-Current target cloud status after the 2026-05-22 20:15 rollback:
+Current verified cloud status after the 2026-05-22 20:15 rollback:
 
 - `GET /api/health` returned `OK`.
 - `docker compose -f docker-compose.cloud.yml ps` showed container `aiglass` up and healthy.
@@ -37,6 +37,7 @@ Current target cloud status after the 2026-05-22 20:15 rollback:
 
 - 2026-05-22 19:25 public-cloud A-board stabilization: microphone and video failures were traced to ESP32A network pressure, not ECS CPU. WebSocket video fallback was retested and rejected because public TCP camera frames stalled for roughly `1.6-2.6s` and disconnected. The working profile is now `HQVGA / q40 / 4fps`, UDP payload `1400`, per-chunk gap `50ms`, UDP ENOMEM cooldown `3000ms`, microphone chunks `40ms`, WebSocket send timeout `5000ms`, and WebSocket ping interval/timeout `60s`. Backend `/ws_audio` now decouples PCM receive from DashScope ASR with a small `asyncio.Queue` plus `asyncio.to_thread`, and same-public-IP audio reconnects are allowed to replace stale owners. Cloud `.env` and `docker-compose.cloud.yml` use `AIGLASS_DISCOVERY_HOST=47.110.89.207`, `AIGLASS_CAMERA_CHAT_FRAMESIZE=HQVGA`, `AIGLASS_CAMERA_CHAT_QUALITY=40`, `AIGLASS_CAMERA_CHAT_FPS=4`, `AIGLASS_CAMERA_NAV_FRAMESIZE=HQVGA`, `AIGLASS_CAMERA_NAV_QUALITY=40`, `AIGLASS_CAMERA_NAV_FPS=4`, `AIGLASS_CAMERA_AUTOTUNE_QUALITY=40`, and `AIGLASS_CAMERA_AUTOTUNE_FPS=4`. Verification after reflashing ESP32A to `COM22`: 100-second serial capture showed `framesize set to HQVGA`, `quality=40`, `target_fps=4`, repeated windows around `sent_5s=20/21`, `fail_5s=0`, `avg_jpeg=3174-3252`, `avg_send_ms=102`, RSSI about `-38` to `-46`, and no mic WebSocket disconnect after startup. Final cloud poll showed `/api/camera/stats` `completed_frames=377`, `complete_fps=4.0`, `avg_jpeg_bytes=3224`, `drop_ratio_10s=0.0`, `crc_errors=0`, `invalid_packets=0`, `last_frame_age_ms=36`; `/api/test/status` showed `audio_client=112.23.177.84:28773` and `audio_last_rx_age_ms=97`.
 - 2026-05-22 20:15 rollback decision: the user confirmed the earlier public 10fps profile had been run for a long time without the PC/backend running locally and was stable. Treat the later 5fps/4fps recovery commits as experimental recovery branches, not the desired product baseline. The active code was restored to the `0f8cb5e` ESP32A/backend behavior with `e6a9ee6` documentation values: `QVGA`, `QUALITY=18`, `FPS=10`, auto-tune fallback `QUALITY=28`, `FPS=8`, UDP payload `1024`, chunk gap `8ms`, ENOMEM retry `8 * 12ms`, and microphone chunk `20ms`.
+- 2026-05-22 20:35 rollback validation: local `python -m py_compile backend/app_main.py` passed, ESP32A ESP-IDF build passed, commit `2d44d51` was pushed to GitHub, ECS `app_main.py`/`docker-compose.cloud.yml` were overwritten from the restored code, ECS `.env` was changed back to `QVGA / QUALITY=18 / FPS=10` with auto-tune `QUALITY=28 / FPS=8`, and Docker was rebuilt/restarted healthy. ESP32A was flashed on `COM22`; serial showed public fallback `47.110.89.207:8765`, repeated `cap_5s=50/51`, `sent_5s=50/51`, `fail_5s=0`, `fps=10`, `q=18`, `avg_send_ms=1`, RSSI around `-37` to `-39`. Cloud validation over the final 7-minute sample produced `79` samples: `complete_fps min=8.2 max=10.08 avg=9.512`, `last_frame_age_ms min=5 max=490 avg=78`, `audio_last_rx_age_ms min=0 max=632 avg=98.6`, final `complete_fps=9.6`, `crc_errors=0`, `invalid_packets=0`, and IMU WebSocket packets kept increasing. Public UDP still showed incomplete-frame drops (`drop_ratio_10s avg≈0.096`, final `dropped_incomplete=431`), so the restored code brings back the 10fps path but does not make public UDP fragment delivery lossless; the old auto-tune occasionally sends `SET:QUALITY=28` or `SET:FPS=8` during drop windows, then returns toward `SET:FPS=10`.
 
 Important operating rule:
 

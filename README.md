@@ -25,6 +25,7 @@ Restored on 2026-05-22 to the earlier public-cloud baseline that was verified wi
 - Microphone chunk: `20 ms`
 - Auto-tune fallback: JPEG quality `28`, `8 fps`
 - Earlier verified result: camera stayed around `9.99-10.05 fps` while `audio_last_rx_age_ms` stayed near `0-49 ms`
+- Post-rollback validation: 7-minute cloud sample averaged `9.51 fps`, final sample was `9.6 fps`, `crc_errors=0`, `invalid_packets=0`, microphone and IMU stayed online
 
 This is the rollback baseline for the public demo. Do not replace it with the later `HQVGA/q40/4fps` recovery settings unless a fresh long-run test proves this restored profile is unstable again.
 
