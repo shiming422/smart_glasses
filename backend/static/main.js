@@ -44,6 +44,11 @@
   const VIEWER_SCALE_STORAGE_KEY = 'aiglass.viewer.manualScale';
   const NAV_OVERLAY_STALE_MS = 2500;
   let viewerManualScale = loadViewerManualScale();
+  let lastNavEvent = null;
+  let navOverlayRaf = 0;
+  let navOverlayForceClearPending = false;
+  let navOverlayStaleTimer = 0;
+  let navOverlayDirty = true;
 
   // === 获取/创建聊天容器（关键补丁） ===
   let chatContainer = document.getElementById('chatContainer');
@@ -466,10 +471,42 @@
     });
   }
 
+  function clearNavOverlayStaleTimer(){
+    if (!navOverlayStaleTimer) return;
+    window.clearTimeout(navOverlayStaleTimer);
+    navOverlayStaleTimer = 0;
+  }
+
+  function scheduleNavOverlayExpiry(ageMs){
+    clearNavOverlayStaleTimer();
+    const remaining = NAV_OVERLAY_STALE_MS - ageMs;
+    if (remaining <= 0) return;
+    navOverlayStaleTimer = window.setTimeout(() => {
+      navOverlayStaleTimer = 0;
+      scheduleNavOverlayRedraw();
+    }, remaining + 30);
+  }
+
+  function scheduleNavOverlayRedraw(forceClear=false){
+    navOverlayDirty = true;
+    navOverlayForceClearPending = navOverlayForceClearPending || forceClear;
+    if (navOverlayRaf) return;
+    navOverlayRaf = window.requestAnimationFrame(() => {
+      const shouldForceClear = navOverlayForceClearPending;
+      navOverlayRaf = 0;
+      navOverlayForceClearPending = false;
+      drawNavOverlay(shouldForceClear);
+    });
+  }
+
   function setViewerLayout(rawWidth, rawHeight){
     const nextRawWidth = Math.max(1, rawWidth | 0);
     const nextRawHeight = Math.max(1, rawHeight | 0);
     const nextDisplay = rotatedDisplaySize(nextRawWidth, nextRawHeight);
+    const layoutChanged = (
+      viewerLayout.displayWidth !== nextDisplay.width ||
+      viewerLayout.displayHeight !== nextDisplay.height
+    );
 
     viewerLayout.rawWidth = nextRawWidth;
     viewerLayout.rawHeight = nextRawHeight;
@@ -477,6 +514,7 @@
     viewerLayout.displayHeight = nextDisplay.height;
 
     syncViewerCanvasSize();
+    if (layoutChanged) scheduleNavOverlayRedraw();
     updateViewerDisplaySize();
   }
 
@@ -501,6 +539,7 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    clearNavOverlayStaleTimer();
     drawNavOverlay(true);
   }
 
@@ -510,7 +549,6 @@
   let navReconnectTimer = 0;
   let latestFrameBuf = null, renderInFlight = false, fallbackImg = null;
   let lastCamFrameAt = 0;
-  let lastNavEvent = null;
   let cameraRuntimeStatus = {
     sourceKey: 'hevc_bridge',
     active: false,
@@ -741,13 +779,22 @@
 
   function drawNavOverlay(forceClear = false){
     if (!navCtx || !navOverlayCanvas) return;
+    if (!forceClear && !navOverlayDirty) return;
     syncViewerCanvasSize();
     const w = navOverlayCanvas.width;
     const h = navOverlayCanvas.height;
     navCtx.setTransform(1, 0, 0, 1, 0, 0);
     navCtx.clearRect(0, 0, w, h);
-    if (forceClear || !lastNavEvent || lastNavEvent.type !== 'nav_result') return;
-    if (performance.now() - navNumber(lastNavEvent.receivedAt, 0) > NAV_OVERLAY_STALE_MS) return;
+    navOverlayDirty = false;
+    if (forceClear || !lastNavEvent || lastNavEvent.type !== 'nav_result') {
+      clearNavOverlayStaleTimer();
+      return;
+    }
+    const overlayAgeMs = performance.now() - navNumber(lastNavEvent.receivedAt, 0);
+    if (overlayAgeMs > NAV_OVERLAY_STALE_MS) {
+      clearNavOverlayStaleTimer();
+      return;
+    }
 
     const frameW = Math.max(1, navNumber(lastNavEvent.frame_width, viewerLayout.displayWidth));
     const frameH = Math.max(1, navNumber(lastNavEvent.frame_height, viewerLayout.displayHeight));
@@ -873,6 +920,7 @@
     }
 
     navDrawGuidance(lastNavEvent);
+    scheduleNavOverlayExpiry(overlayAgeMs);
   }
 
   function drawRotatedFrame(src, srcW, srcH){
@@ -889,7 +937,6 @@
     ctx.rotate(Math.PI / 2);
     ctx.drawImage(src, 0, 0, srcW, srcH);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    drawNavOverlay();
     camDebug.rawSize = `${srcW}x${srcH}`;
     camDebug.displaySize = `${viewerLayout.cssWidth}x${viewerLayout.cssHeight} (${Math.round(viewerManualScale * 100)}%, native ${viewerLayout.displayWidth}x${viewerLayout.displayHeight})`;
   }
@@ -1040,7 +1087,7 @@
       try{
         const data = JSON.parse(ev.data);
         lastNavEvent = { ...data, receivedAt: performance.now() };
-        drawNavOverlay();
+        scheduleNavOverlayRedraw();
       }catch(e){}
     };
     socket.onclose = () => {

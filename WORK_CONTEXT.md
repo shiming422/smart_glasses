@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-22 10:56 Asia/Shanghai
+Last updated: 2026-05-22 11:24 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -28,7 +28,8 @@ Current verified cloud status on 2026-05-22 10:56:
 - Cloud camera source is currently `AIGLASS_CAMERA_SOURCE=udp`, not the local Windows external C++ gateway. `/api/camera/stats` reported `protocol=udp`, `camera_source_name=esp32_udp`, `complete_fps=10.1`, `avg_jpeg_bytes=4372`, `ctrl_clients=1`, and `ctrl_last_command=SET:FPS=10`.
 - ESP32B IMU is live through the cloud path: `/api/imu/status` reported `ws_in_clients=1` and `ws_in_packets=27299`.
 - Audio/mic is currently not the active focus: `/api/test/status` had empty `audio_client` and no recent `audio_last_rx_age_ms`. Earlier performance work intentionally muted/disabled speaker playback for the current demo baseline.
-- Frontend at the public URL has manual camera preview scaling (`50%` to `220%`) and a bottom-right resize handle for the IMU/glasses model panel. `index.html` cache-busts `main.js` with `v=20260522-resizable-viewer`.
+- Frontend at the public URL has manual camera preview scaling (`50%` to `220%`) and a bottom-right resize handle for the IMU/glasses model panel. `index.html` cache-busts `main.js` with `v=20260522-nav-overlay-smooth`.
+- Navigation overlay smoothness fix is deployed: frontend overlay drawing is event-driven instead of redrawing on every video frame, and cloud navigation inference throttle is now `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=300` with `AIGLASS_PATH_FRAME_DIV=2`.
 
 Important operating rule:
 
@@ -177,8 +178,9 @@ Fallback rule:
 
 Current frontend / blind-path runtime notes:
 
-- Backend serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` now cache-busts `main.js` with version `20260522-resizable-viewer`.
+- Backend serves `/` and `/static/*` with explicit UTF-8 response headers, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`; `index.html` now cache-busts `main.js` with version `20260522-nav-overlay-smooth`.
 - Frontend has a manual camera preview scale control (`50%` to `220%`, persisted in `localStorage`) and an explicit bottom-right resize handle for the IMU/glasses model panel.
+- Frontend navigation overlay is now event-driven: `/ws/viewer` updates the raw camera canvas at camera FPS, while `#navOverlayCanvas` redraws only on new `/ws/nav_events` results, canvas size changes, or stale-overlay cleanup. This avoids repainting masks/lines/text on every video frame.
 - Frontend preview still rotates the camera frame and flips it vertically for the current mounting direction, and the preview area is larger than the previous layout.
 - During navigation, `/ws/viewer` now uses the original backend blind-path drawing code (`BlindPathNavigator._draw_visualizations()` via `res.annotated_image`) rather than a frontend canvas recreation.
 - `/ws/nav_events` still sends structured navigation results (`type=nav_result`, mode, guidance, latency, camera sequence/frame id, timestamp, optional visualization metadata/state info), but frontend recognition drawing is intentionally disabled so it does not fight with the native annotated JPEG.
@@ -253,7 +255,7 @@ Do not do yet:
 
 - User symptom: after clarity/native-overlay work, cloud demo felt very laggy. The actual bottleneck had two layers: navigation preview was tied to backend annotated JPEG generation, and ESP32A UDP burst sending was exhausting lwIP/Wi-Fi TX memory on the public route.
 - Backend/frontend change: cloud navigation now uses `AIGLASS_NAV_DIRECT_VIEWER=1`, so `/ws/viewer` keeps sending raw ESP32 JPEG frames at camera cadence while `/ws/nav_events` carries recognition geometry. `backend/static/main.js` draws the navigation visualizations on `navOverlayCanvas` in the same rotated/flipped display coordinate system as the preview.
-- Backend inference scheduling: `AIGLASS_NAV_INFER_MIN_INTERVAL_MS` is now `1200`, and the cooldown is measured after the previous inference completion/start reference instead of allowing CPU inference to run back-to-back after a long frame. Runtime status now reports `nav_direct_viewer` and `nav_raw_between_overlays`.
+- Historical backend inference scheduling note from 2026-05-21: this was `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=1200` at that time, with cooldown measured after the previous inference completion/start reference. Current public cloud value is `300`; see the 2026-05-22 navigation overlay smoothness section.
 - Backend annotation CPU saving: `workflow_blindpath.py` supports `AIGLASS_NAV_SKIP_BACKEND_ANNOTATION=1`; cloud enables it because the frontend overlay is now the visible recognition layer.
 - ESP32A firmware change: `esp32_video_mic/main/inc/sys_config.h` now adds UDP burst pacing for public WAN use: `APP_CAM_UDP_CHUNK_GAP_MS=8`, `APP_CAM_UDP_ENOMEM_RETRY=8`, and `APP_CAM_UDP_ENOMEM_RETRY_DELAY_MS=12`. This prevents repeated `sendto errno=12` bursts from turning every frame into an incomplete UDP frame.
 - Superseded historical cloud camera profile from the first hotfix: `QVGA`, `QUALITY=28`, `FPS=5`. The later public-cloud sweep below replaced this with the current stable demo profile.
@@ -360,7 +362,7 @@ Historical first-hotfix validation below is kept for traceability and is superse
 - ESP32B audio receive result: serial repeatedly showed `/stream.wav` connection and `WAV ok: 8000/16bit/mono (chunked=1)`; public `/api/test/status` showed `stream_audio_clients=1`. Playback path is connected, but it currently reconnects often during idle/short stream periods; polish item is to make `/stream.wav` playback more continuous and reduce reconnect churn.
 - Public latency snapshot from PC to ECS: ICMP ping around `14-30 ms`; HTTP health `time_connect=0.034s`, `time_starttransfer=0.144s`. Camera preview transport is healthy at roughly 10 fps with server-side latest-frame age usually below `~110 ms`. Navigation inference on the CPU cloud backend is variable rather than transport-bound: samples included `nav_infer_last_ms=72` and an earlier slow sample around `3503 ms`, with `nav_infer_max_ms=5373` and `nav_infer_errors=0`; next optimization should separate "preview latency" from "AI inference latency".
 - Product target clarified: the normal demo/product path is public-cloud-first. ESP32A/B only need to join any Wi-Fi that can reach the public internet; LAN UDP discovery is a convenience for local development, and the firmware public fallback should keep the system working when LAN discovery is impossible. The backend should be a long-running Docker service on the ECS server.
-- Backend optimization implemented locally after the cloud baseline: `AIGLASS_NAV_INFER_MIN_INTERVAL_MS` defaults to `750`, so navigation inference is latest-frame-only and rate-limited instead of trying to keep up with every camera frame. `/api/test/status` now reports `nav_infer_min_interval_ms`, source sequence, decode time, frame age, busy skips, and throttle skips. New `/api/perf/status` returns runtime, camera, and IMU status together.
+- Historical backend optimization note: `AIGLASS_NAV_INFER_MIN_INTERVAL_MS` previously defaulted to `750`; current public cloud value is `300`, with `/api/test/status` reporting `nav_infer_min_interval_ms`, source sequence, decode time, frame age, busy skips, and throttle skips. `/api/perf/status` returns runtime, camera, and IMU status together.
 - `/stream.wav` now has idle-silence keepalive controlled by `AIGLASS_STREAM_IDLE_SILENCE=1` and `AIGLASS_STREAM_IDLE_SILENCE_MS=20`, so ESP32B should keep one continuous WAV stream instead of reconnecting whenever no TTS audio is queued.
 - Added `backend/docker-compose.cloud.yml` as the reproducible ECS deployment file. It uses `restart: unless-stopped`, maps TCP `8765` plus UDP `22345`, `12345`, and `54321`, defaults to `AIGLASS_CAMERA_SOURCE=udp`, and advertises `AIGLASS_DISCOVERY_HOST=47.110.89.207`. This is the file to use on the server for the always-on public backend.
 - Historical verification note from an earlier window: `python -m py_compile backend\app_main.py backend\audio_stream.py`, `docker compose config --quiet`, and `docker compose -f docker-compose.cloud.yml config --quiet` all passed, but direct ECS deploy was not completed in that window because SSH rejected the then-available key. This is superseded by the current public cloud deployment section above; the server is now deployed and reachable.
@@ -437,4 +439,12 @@ Historical first-hotfix validation below is kept for traceability and is superse
 
 - Added a manual camera preview scale control on the web page: range `50%` to `220%`, reset button, value persisted in `localStorage` under `aiglass.viewer.manualScale`. The camera canvas and navigation overlay canvas still share the same CSS size, so blind-path overlays remain aligned while the user changes preview scale.
 - Changed the IMU/glasses model floating panel from implicit browser resize to an explicit bottom-right resize handle (`#imu_resize_handle`). Dragging the top bar still moves the panel; dragging the corner changes width/height within the stage bounds and immediately resizes the Three.js renderer.
-- `backend/templates/index.html` now cache-busts `main.js` with `v=20260522-resizable-viewer`. For cloud deployment, copy `backend/static/main.js` and `backend/templates/index.html` to `/root/smart_glasses_esp32_workspace/backend/...` and restart/reload the `aiglass` container.
+- `backend/templates/index.html` originally cache-busted the layout-controls work with `v=20260522-resizable-viewer`; it is now superseded by `v=20260522-nav-overlay-smooth`. For cloud deployment, copy `backend/static/main.js` and `backend/templates/index.html` to `/root/smart_glasses_esp32_workspace/backend/...` and restart/reload the `aiglass` container.
+
+2026-05-22 navigation overlay smoothness optimization:
+
+- Diagnosis: a 20-second public-cloud blind-navigation test showed `/ws/viewer` was already smooth at about `9.97 fps`; the visible stutter came from `/ws/nav_events` only producing `16` nav results in 20 seconds (`0.78 Hz`, average interval `1281 ms`) because cloud `.env` had `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=1200`.
+- Tried `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=300` with existing `AIGLASS_PATH_FRAME_DIV=2`: `/ws/viewer` stayed around `10.02 fps`, nav results increased to `30` in 20 seconds (`1.55 Hz`, average interval `644 ms`), and inference average/max were about `311/903 ms`.
+- Tried a more aggressive `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=100` plus `AIGLASS_PATH_FRAME_DIV=1`; this was worse (`1.39 Hz`, average interval `719 ms`, inference average about `580 ms`) because the CPU became busier. Reverted cloud `.env` to stable `300` and `2`.
+- Deployed frontend drawing optimization: `drawRotatedFrame()` no longer calls `drawNavOverlay()` every video frame. Overlay drawing is scheduled only when a new nav event arrives, when the overlay canvas size changes, or when the overlay expires. Public page now loads `main.js?v=20260522-nav-overlay-smooth`.
+- Final 20-second verification after deploy: `/ws/viewer` `199` frames at `10.0 fps`, `/ws/nav_events` `30` nav results at `1.57 Hz`, average nav interval `635 ms`, average/max nav latency `308/897 ms`, camera remained around `9.98 fps`, and mode returned to `CHAT` after `stop_nav`.
