@@ -24,7 +24,7 @@
 // 其他配置
 #define BUTTON_GPIO         0
 #define CAMERA_XCLK_FREQ_HZ 20000000
-#define CAMERA_JPEG_QUAL    18
+#define CAMERA_JPEG_QUAL    28
 #define CAMERA_FRAME_SIZE   FRAMESIZE_QVGA
 #define AI_TASK_STACK_SIZE  (1024 * 16)
 
@@ -89,7 +89,7 @@
 #define APP_CAM_QUEUE_DEPTH 1
 #define APP_CAM_MIN_FPS     5
 #define APP_CAM_MAX_FPS     60
-#define APP_CAM_DEFAULT_FPS 10
+#define APP_CAM_DEFAULT_FPS 5
 
 // WebSocket tuning (camera/audio)
 #define APP_WS_RECONNECT_MS       10000

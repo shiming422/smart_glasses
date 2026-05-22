@@ -15,7 +15,7 @@
 
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
-| ESP32A 视频上传 | 已打通 | OV5640 JPEG 走 UDP `22345` 分片上传，当前公网稳定约 `10 fps` |
+| ESP32A 视频上传 | 已打通 | OV5640 JPEG 走 UDP `22345` 分片上传，当前公网稳定档约 `5 fps` |
 | ESP32A 麦克风上传 | 已恢复并验证 | PDM RX `16 kHz PCM16` 走 WebSocket `/ws_audio`，云端 `audio_last_rx_age_ms` 接近 `0` |
 | ESP32A 云端优先 | 已修复 | 固件优先使用 `47.110.89.207:8765` fallback，避免被局域网发现结果劫走 |
 | ESP32B IMU 上传 | 已打通 | ICM42688 姿态数据走 `/ws/imu_in`，保留 UDP `12345` fallback |
@@ -32,8 +32,8 @@
 - A 板串口：`APP_WS_AUD: PDM RX ready @ 16000 Hz`
 - A 板串口：`APP_WS_AUD: ws connected`
 - 云端 `/api/test/status`：`audio_ws_enabled=true`
-- 云端 `/api/test/status`：`camera_udp_fps≈10`
-- 云端 `/api/camera/stats`：`crc_errors=0`，`invalid_packets=0`
+- 云端 `/api/test/status`：`camera_udp_fps≈5`
+- 云端 `/api/camera/stats`：`drop_ratio_10s=0.0`，`crc_errors=0`，`invalid_packets=0`
 
 ## 工程结构
 
@@ -68,8 +68,8 @@
 - `APP_BACKEND_PREFER_FALLBACK=1`
 - `SEC_BACKEND_FALLBACK_HOST=47.110.89.207`（在本地 ignored `secrets.h` 中）
 - `CAMERA_FRAME_SIZE=FRAMESIZE_QVGA`
-- `CAMERA_JPEG_QUAL=18`
-- `APP_CAM_DEFAULT_FPS=10`
+- `CAMERA_JPEG_QUAL=28`
+- `APP_CAM_DEFAULT_FPS=5`
 - `APP_CAM_UDP_PORT=22345`
 
 ### ESP32B: Audio + IMU

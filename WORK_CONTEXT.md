@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-22 12:20 Asia/Shanghai
+Last updated: 2026-05-22 17:48 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -21,18 +21,19 @@ The current product/demo direction is **public-cloud-first**, not local-PC-first
 - Cloud service command: `cd /root/smart_glasses_esp32_workspace/backend && docker compose -f docker-compose.cloud.yml up -d`
 - Published cloud ports: TCP `8765`; UDP `22345` camera; UDP `12345` IMU; UDP `54321` discovery.
 
-Current verified cloud status on 2026-05-22 12:06:
+Current verified cloud status on 2026-05-22 17:48:
 
 - `GET /api/health` returned `OK`.
 - `docker compose -f docker-compose.cloud.yml ps` showed container `aiglass` up and healthy.
-- Cloud camera source is currently `AIGLASS_CAMERA_SOURCE=udp`, not the local Windows external C++ gateway. `/api/camera/stats` reported `protocol=udp`, `camera_source_name=esp32_udp`, `complete_fps=10.05`, `avg_jpeg_bytes=3584`, `last_frame_age_ms=40`, `ctrl_clients=1`, and `ctrl_last_command=SET:FPS=10`.
+- Cloud camera source is currently `AIGLASS_CAMERA_SOURCE=udp`, not the local Windows external C++ gateway. `/api/camera/stats` reported `protocol=udp`, `camera_source_name=esp32_udp`, `complete_fps=5.01-5.04`, `avg_jpeg_bytes≈2665-2670`, `drop_ratio_10s=0.0`, `last_frame_age_ms≈40-184`, `ctrl_clients=1`, and `ctrl_last_command=SET:FPS=5`.
 - ESP32B IMU is live through the cloud path.
-- ESP32A microphone uplink is live again. `/api/test/status` reported `audio_ws_enabled=true`, `audio_client=112.23.177.84:11287`, `audio_last_rx_age_ms` near `0`, and camera still around `10 fps`.
+- ESP32A microphone uplink is live again. `/api/test/status` reported `audio_ws_enabled=true`, `audio_client=112.23.177.84:11290`, `audio_last_rx_age_ms` near `0`, and camera stable around `5 fps`.
 - Frontend at the public URL has manual camera preview scaling (`50%` to `220%`) and a bottom-right resize handle for the IMU/glasses model panel. `index.html` cache-busts `main.js` with `v=20260522-nav-overlay-smooth`.
 - Navigation overlay smoothness fix is deployed: frontend overlay drawing is event-driven instead of redrawing on every video frame, and cloud navigation inference throttle is now `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=300` with `AIGLASS_PATH_FRAME_DIV=2`.
 - 2026-05-22 11:49 A-board recovery: ESP32A had stopped appearing on the public backend because firmware trusted a LAN discovery result `192.168.1.106:8765`, so video UDP went to `192.168.1.106:22345` instead of the ECS server. `esp32_video_mic` now defaults `SEC_BACKEND_PREFER_FALLBACK=1`; with public fallback configured, `app_backend.c` uses `47.110.89.207:8765` before LAN discovery. Build passed with ESP-IDF 5.5.2, flashing to `COM22` passed, serial showed `using backend fallback: 47.110.89.207:8765`, `camera udp target: 47.110.89.207:22345`, and `camera_ctrl connected`. Cloud stats then increased from `completed_frames=9039` to `9090` in 5 seconds with `complete_fps=10.05`, `last_frame_age_ms=40`, `crc_errors=0`, and `ctrl_clients=1`.
 - 2026-05-22 12:06 A-board microphone restore: mic was unavailable because the previous video-performance baseline had disabled both ends: `APP_MIC_UPLINK_ENABLE=0` in ESP32A firmware and `AIGLASS_AUDIO_WS_ENABLED=0` in the ECS `.env`/cloud compose path. `esp32_video_mic/main/inc/sys_config.h` now sets `APP_MIC_UPLINK_ENABLE=1`; `backend/docker-compose.cloud.yml` now defaults `AIGLASS_AUDIO_WS_ENABLED=1`; ECS `.env` was updated to `AIGLASS_AUDIO_WS_ENABLED=1`; the updated compose file was copied to `/root/smart_glasses_esp32_workspace/backend/docker-compose.cloud.yml`; and `docker compose -f docker-compose.cloud.yml up -d` left container `aiglass` healthy. ESP32A was rebuilt and flashed to `COM22`; serial showed `APP_WS_AUD: PDM RX ready @ 16000 Hz`, `audio ws uri: ws://47.110.89.207:8765/ws_audio`, and `APP_WS_AUD: ws connected`. A 50-second cloud poll kept `audio_last_rx_age_ms` at `0-49 ms` while camera stayed around `9.99-10.05 fps`.
 - 2026-05-22 12:20 repository publish prep: `README.md` was rewritten from an older mojibake/Phase-2-local-gateway snapshot into the current public-cloud-first product snapshot. It now documents current feature completion, active public backend, A/B board responsibilities, cloud Docker deployment, local development, ESP32A/B flashing, verification commands, and files that must not be committed.
+- 2026-05-22 17:48 targeted A-board recovery: a temporary mic-off test did **not** fix ESP32A video `sendto errno=12`, so microphone uplink was restored. The stable public-cloud camera profile was reverted to `QVGA`, `QUALITY=28`, `FPS=5` on both ESP32A firmware defaults and cloud compose/ECS `.env`; cloud auto-tune fallback is now `QUALITY=36`, `FPS=5`. ESP32A was rebuilt/flashed to `COM22`; serial showed `APP_WS_AUD: PDM RX ready @ 16000 Hz`, `APP_WS_AUD: ws connected`, `camera_ctrl connected`, `framesize set to QVGA`, `quality=28`, `target_fps=5`, and repeated 5-second windows `sent_5s=25/26`, `fail_5s=0`, `avg_jpeg≈2670`, RSSI around `-45` to `-49`. Stable cloud polls showed `complete_fps≈5.0`, `drop_ratio_10s=0.0`, `last_frame_age_ms≈40-184`, and `audio_last_rx_age_ms≈0-40 ms`.
 
 Important operating rule:
 
@@ -89,7 +90,7 @@ Changes already made in the clean copy:
 - `main/inc/sys_config.h` no longer has a hardcoded backend host; the stable backend HTTP/WebSocket port remains `8765`.
 - Camera UDP sender, camera control WebSocket, and microphone WebSocket clients now wait for discovered backend host before connecting.
 - `main/src/app_stream_cam.c` now uses three pinned tasks: `cam_capture_task` on core 0, `cam_udp_send_task` on core 1, and `cam_ctrl_ws_task` on core 1. Camera queue depth is fixed at `1`; sending aborts an old frame if a newer frame is already waiting.
-- A-board camera defaults are currently `FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=18`, `APP_CAM_DEFAULT_FPS=10`, `APP_CAM_UDP_PAYLOAD=1024`, and `APP_CAM_UDP_PORT=22345` for the public demo quality/stability balance.
+- A-board camera defaults are currently `FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=28`, `APP_CAM_DEFAULT_FPS=5`, `APP_CAM_UDP_PAYLOAD=1024`, and `APP_CAM_UDP_PORT=22345` for the public demo stability baseline with microphone enabled.
 - Control commands kept for backend mode linkage: `SET:FPS=...`, `SET:QUALITY=...`, and `SET:FRAMESIZE=...`.
 - `APP_WAV_STREAM_ENABLE` is `0`, so this board does not pull backend audio playback.
 - `main/CMakeLists.txt` no longer compiles local HTTP, TTS, or IMU modules for this board.
@@ -166,7 +167,8 @@ Backend `.env` items that must be checked before hardware testing:
 - `AIGLASS_CAMERA_SOURCE=cpp_gateway` is the local Windows/LAN gateway optimization input.
 - `AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1`, `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, `AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`, `AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`, and `AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346` should be set for the current Windows-host C++ gateway path.
 - `AIGLASS_CAMERA_UDP_PORT=22345`, `AIGLASS_CAMERA_UDP_FRAME_TTL_MS=250`, and `AIGLASS_CAMERA_CTRL_WS_ENABLED=1` should be set for the A-board UDP transport.
-- `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=35` prevents transient gateway/A-board reconnect drops from immediately forcing a downshift during startup.
+- Current public cloud camera profile: `AIGLASS_CAMERA_CHAT_FRAMESIZE=QVGA`, `AIGLASS_CAMERA_CHAT_QUALITY=28`, `AIGLASS_CAMERA_CHAT_FPS=5`, `AIGLASS_CAMERA_NAV_FRAMESIZE=QVGA`, `AIGLASS_CAMERA_NAV_QUALITY=28`, `AIGLASS_CAMERA_NAV_FPS=5`.
+- Current public cloud auto-tune fallback: `AIGLASS_CAMERA_AUTOTUNE_QUALITY=36`, `AIGLASS_CAMERA_AUTOTUNE_FPS=5`, `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=60`; this prevents transient A-board reconnect drops from immediately forcing repeated downshifts during startup.
 - `AIGLASS_NAV_DIRECT_VIEWER=0` makes `/ws/viewer` send backend-native annotated JPEGs during navigation. Set it to `1` only when testing the raw-first frontend-overlay path.
 - Use `AIGLASS_CAMERA_SOURCE=ws` only for the old direct `/ws/camera` JPEG debug fallback.
 - Backend discovery responder must listen on UDP `54321` and return the backend machine IP reachable by the ESP32 boards.
@@ -265,16 +267,16 @@ Do not do yet:
 
 ## 2026-05-21 Public Cloud Smoothness Sweep
 
-- Superseded video-only note: voice had been disabled for the earlier video demo path. As of 2026-05-22 12:06, ESP32A microphone uplink is enabled again with `APP_MIC_UPLINK_ENABLE=1`, and cloud `/ws_audio` is enabled with `AIGLASS_AUDIO_WS_ENABLED=1`. TTS/speaker playback remains disabled unless explicitly re-enabled.
-- Final deployed public-cloud demo profile is `QVGA`, `QUALITY=18`, `FPS=10` for both CHAT and blind navigation. Live ECS `.env` on `47.110.89.207` and `backend/docker-compose.cloud.yml` are aligned to that profile, with auto-tune fallback `QUALITY=28`, `FPS=8`, and `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=60`.
-- ESP32A firmware defaults now also match the final public profile: `CAMERA_FRAME_SIZE=FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=18`, `APP_CAM_DEFAULT_FPS=10`, `CAMERA_XCLK_FREQ_HZ=20000000`, UDP payload `1024`, chunk gap `8ms`, ENOMEM retry `8 * 12ms`.
+- Superseded video-only note: voice had been disabled for the earlier video demo path. As of 2026-05-22 17:48, ESP32A microphone uplink is enabled again with `APP_MIC_UPLINK_ENABLE=1`, and cloud `/ws_audio` is enabled with `AIGLASS_AUDIO_WS_ENABLED=1`. TTS/speaker playback remains disabled unless explicitly re-enabled.
+- Superseded profile note: `QVGA`, `QUALITY=18`, `FPS=10` worked in a short video-only sweep but later reproduced public-route ESP32A `sendto errno=12` / incomplete UDP frame failure when microphone was restored and the system was rebooted. The current source-of-truth public profile is the 2026-05-22 17:48 recovery profile: `QVGA`, `QUALITY=28`, `FPS=5`, auto-tune fallback `QUALITY=36`, `FPS=5`.
+- ESP32A firmware defaults now match the recovery profile: `CAMERA_FRAME_SIZE=FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=28`, `APP_CAM_DEFAULT_FPS=5`, `CAMERA_XCLK_FREQ_HZ=20000000`, UDP payload `1024`, chunk gap `8ms`, ENOMEM retry `8 * 12ms`.
 - ESP32A camera control now accepts additional low/intermediate frame sizes: `96X96`, `QQVGA`, `128X128`, `QCIF`, `HQVGA`, `240X240`, `320X320`, `CIF`, and `HVGA`, in addition to the older QVGA/VGA/SVGA/XGA/SXGA/UXGA set.
 - ESP32A serial stats now include `avg_cap_ms/max_cap_ms` and `avg_send_ms/max_send_ms`, so future tuning can distinguish camera capture bottleneck from UDP send bottleneck.
 - Backend UDP auto-tune now has a warmup guard for direct Python UDP mode too. When `/ws/camera_ctrl` reconnects or UDP frame ids reset after an ESP32A reboot, it clears the recent drop windows and suppresses immediate auto-downgrade for the warmup interval. This avoids boot/reconnect transients forcing a false downgrade.
 
 Sweep results:
 
-- Historical video-only stable final: `QVGA q18 fps10`, XCLK `20MHz`, voice off. Cloud `/api/perf/status` showed `complete_fps=10.02`, `drop_ratio_10s=0.0`, `last_frame_age_ms=8`, `auto_level=0`, `audio_ws_enabled=false`, and `avg_jpeg_bytes≈2978`. Browser `/ws/viewer` measured `451 frames / 45.13s = 9.99fps`, p50 gap `100.4ms`, p95 gap `159.8ms`, max gap `320.3ms`. ESP32A serial stabilized to repeated `50/51 sent_5s`, `fail_5s=0`, `avg_send_ms=1`. Current product baseline keeps the same camera profile but has ESP32A mic uplink restored.
+- Historical video-only stable final: `QVGA q18 fps10`, XCLK `20MHz`, voice off. Cloud `/api/perf/status` showed `complete_fps=10.02`, `drop_ratio_10s=0.0`, `last_frame_age_ms=8`, `auto_level=0`, `audio_ws_enabled=false`, and `avg_jpeg_bytes≈2978`. Browser `/ws/viewer` measured `451 frames / 45.13s = 9.99fps`, p50 gap `100.4ms`, p95 gap `159.8ms`, max gap `320.3ms`. ESP32A serial stabilized to repeated `50/51 sent_5s`, `fail_5s=0`, `avg_send_ms=1`. This is now treated as a video-only historical result, not the current product baseline.
 - Blind navigation validation on the final profile: `/api/test/control` `blind_nav` returned mode `BLINDPATH_NAV`; over 35s the test received `23` `nav_result` events and `0` nav errors, then `stop_nav` returned to `CHAT`. Viewer during navigation measured about `9.81fps`, and recognition itself is alive.
 - Actual captured preview sample: `backend/runtime_logs/cloud_q18_fps10_raw.jpg` and oriented preview `backend/runtime_logs/cloud_q18_fps10_preview_oriented.jpg`. The sample scene remains dim; visual clarity should be judged again with the camera aimed at a bright target.
 
