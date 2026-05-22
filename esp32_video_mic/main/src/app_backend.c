@@ -184,10 +184,18 @@ static void backend_discovery_task(void *arg) {
         }
 
         xEventGroupWaitBits(wifi_evt, APP_WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-        bool found = discovery_once(APP_DISCOVERY_TIMEOUT_MS);
+        bool found = false;
+#if APP_BACKEND_PREFER_FALLBACK
+        found = use_fallback_backend();
+        if (!found) {
+            found = discovery_once(APP_DISCOVERY_TIMEOUT_MS);
+        }
+#else
+        found = discovery_once(APP_DISCOVERY_TIMEOUT_MS);
         if (!found) {
             found = use_fallback_backend();
         }
+#endif
         vTaskDelay(pdMS_TO_TICKS(found ? APP_DISCOVERY_REFRESH_MS : APP_DISCOVERY_RETRY_MS));
     }
 }

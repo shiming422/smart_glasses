@@ -8,3 +8,6 @@
 // Optional cloud/demo backend fallback. Leave empty for LAN-only auto-discovery.
 #define SEC_BACKEND_FALLBACK_HOST ""
 #define SEC_BACKEND_FALLBACK_PORT 8765
+
+// Keep enabled for public demo/product mode. Set to 0 only for LAN-first lab tests.
+#define SEC_BACKEND_PREFER_FALLBACK 1

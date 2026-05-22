@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-22 11:24 Asia/Shanghai
+Last updated: 2026-05-22 11:49 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -21,19 +21,20 @@ The current product/demo direction is **public-cloud-first**, not local-PC-first
 - Cloud service command: `cd /root/smart_glasses_esp32_workspace/backend && docker compose -f docker-compose.cloud.yml up -d`
 - Published cloud ports: TCP `8765`; UDP `22345` camera; UDP `12345` IMU; UDP `54321` discovery.
 
-Current verified cloud status on 2026-05-22 10:56:
+Current verified cloud status on 2026-05-22 11:49:
 
 - `GET /api/health` returned `OK`.
 - `docker compose -f docker-compose.cloud.yml ps` showed container `aiglass` up and healthy.
-- Cloud camera source is currently `AIGLASS_CAMERA_SOURCE=udp`, not the local Windows external C++ gateway. `/api/camera/stats` reported `protocol=udp`, `camera_source_name=esp32_udp`, `complete_fps=10.1`, `avg_jpeg_bytes=4372`, `ctrl_clients=1`, and `ctrl_last_command=SET:FPS=10`.
+- Cloud camera source is currently `AIGLASS_CAMERA_SOURCE=udp`, not the local Windows external C++ gateway. `/api/camera/stats` reported `protocol=udp`, `camera_source_name=esp32_udp`, `complete_fps=10.05`, `avg_jpeg_bytes=3584`, `last_frame_age_ms=40`, `ctrl_clients=1`, and `ctrl_last_command=SET:FPS=10`.
 - ESP32B IMU is live through the cloud path: `/api/imu/status` reported `ws_in_clients=1` and `ws_in_packets=27299`.
 - Audio/mic is currently not the active focus: `/api/test/status` had empty `audio_client` and no recent `audio_last_rx_age_ms`. Earlier performance work intentionally muted/disabled speaker playback for the current demo baseline.
 - Frontend at the public URL has manual camera preview scaling (`50%` to `220%`) and a bottom-right resize handle for the IMU/glasses model panel. `index.html` cache-busts `main.js` with `v=20260522-nav-overlay-smooth`.
 - Navigation overlay smoothness fix is deployed: frontend overlay drawing is event-driven instead of redrawing on every video frame, and cloud navigation inference throttle is now `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=300` with `AIGLASS_PATH_FRAME_DIV=2`.
+- 2026-05-22 11:49 A-board recovery: ESP32A had stopped appearing on the public backend because firmware trusted a LAN discovery result `192.168.1.106:8765`, so video UDP went to `192.168.1.106:22345` instead of the ECS server. `esp32_video_mic` now defaults `SEC_BACKEND_PREFER_FALLBACK=1`; with public fallback configured, `app_backend.c` uses `47.110.89.207:8765` before LAN discovery. Build passed with ESP-IDF 5.5.2, flashing to `COM22` passed, serial showed `using backend fallback: 47.110.89.207:8765`, `camera udp target: 47.110.89.207:22345`, and `camera_ctrl connected`. Cloud stats then increased from `completed_frames=9039` to `9090` in 5 seconds with `complete_fps=10.05`, `last_frame_age_ms=40`, `crc_errors=0`, and `ctrl_clients=1`.
 
 Important operating rule:
 
-- ESP32A and ESP32B should be able to join **any Wi-Fi with public internet access** and still use the product because firmware has public backend fallback to `47.110.89.207:8765` after LAN discovery times out.
+- ESP32A and ESP32B should be able to join **any Wi-Fi with public internet access** and still use the product. ESP32A now prefers public backend fallback `47.110.89.207:8765` when configured, so LAN discovery cannot hijack the cloud demo path; LAN discovery is only for explicit lab/local testing.
 - LAN UDP discovery on `54321` is now a development convenience for local testing, not the required product path.
 - Other Codex windows should inspect this file first, then verify the current cloud state with `/api/health`, `/api/camera/stats`, `/api/imu/status`, and `/api/test/status` before changing performance settings.
 - Do not commit private runtime files such as `backend/.env`, firmware `secrets.h`, `wifi_profile.h`, model caches, build outputs, or runtime logs.
@@ -57,7 +58,7 @@ Original source status:
 
 ## Wi-Fi / LAN Rule
 
-- Product/demo mode: ESP32 hardware can use any Wi-Fi that reaches the public internet; both boards should fall back to public backend `47.110.89.207:8765` if LAN discovery does not answer.
+- Product/demo mode: ESP32 hardware can use any Wi-Fi that reaches the public internet. ESP32A firmware is public-fallback-first when `SEC_BACKEND_PREFER_FALLBACK=1`, and the fallback backend is `47.110.89.207:8765`.
 - Local lab mode observed on 2026-05-20: PC Wi-Fi `TP-LINK_5G_6C93` on `5 GHz`, WLAN IPv4 `192.168.1.106`; ESP32 hardware used sibling 2.4 GHz SSID `TP-LINK_6C93`.
 - Local private config files may still target `TP-LINK_6C93` for bench testing, but the product expectation is no longer tied to this one router.
 - Committed defaults/examples use placeholders, and real Wi-Fi passwords/API keys stay ignored locally.
@@ -71,7 +72,7 @@ Clean copy: `E:\Desktop\smart_glasses_esp32_workspace\esp32_video_mic`
 
 Current role:
 
-- Discovers backend IP automatically via UDP broadcast on `54321`, then uses public fallback `47.110.89.207:8765` if discovery times out.
+- In product/demo mode, prefers public fallback `47.110.89.207:8765` when configured (`SEC_BACKEND_PREFER_FALLBACK=1`), then uses LAN UDP discovery on `54321` only if fallback is unavailable or explicitly disabled for lab testing.
 - Camera uploads JPEG latest-frame stream to backend `UDP 22345`; each frame is split into 1024-byte UDP payload chunks with the 32-byte little-endian `AIGC` header and CRC32.
 - Camera WebSocket is no longer the main video path. A lightweight control channel connects to `ws://<discovered-backend>:8765/ws/camera_ctrl`.
 - PDM microphone uploads PCM16 mono 16 kHz chunks to `ws://<discovered-backend>:8765/ws_audio`.

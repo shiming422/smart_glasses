@@ -32,7 +32,8 @@
 // Audio playback and IMU live on the separate esp32_audio_imu firmware.
 #define APP_MIC_UPLINK_ENABLE 0
 
-// Backend config. The host is discovered at runtime via UDP broadcast.
+// Backend config. Product/demo firmware should prefer the public fallback when
+// it is configured, so LAN discovery cannot hijack the board away from cloud.
 #define APP_SERVER_PORT     8765
 #ifndef SEC_BACKEND_FALLBACK_HOST
 #define SEC_BACKEND_FALLBACK_HOST ""
@@ -40,8 +41,12 @@
 #ifndef SEC_BACKEND_FALLBACK_PORT
 #define SEC_BACKEND_FALLBACK_PORT APP_SERVER_PORT
 #endif
+#ifndef SEC_BACKEND_PREFER_FALLBACK
+#define SEC_BACKEND_PREFER_FALLBACK 1
+#endif
 #define APP_BACKEND_FALLBACK_HOST SEC_BACKEND_FALLBACK_HOST
 #define APP_BACKEND_FALLBACK_PORT SEC_BACKEND_FALLBACK_PORT
+#define APP_BACKEND_PREFER_FALLBACK SEC_BACKEND_PREFER_FALLBACK
 #define APP_DISCOVERY_PORT  54321
 #define APP_DISCOVERY_REQUEST "AIGLASS_DISCOVER"
 #define APP_DISCOVERY_PREFIX  "AIGLASS_HOST:"
