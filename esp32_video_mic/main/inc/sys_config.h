@@ -24,7 +24,7 @@
 // 其他配置
 #define BUTTON_GPIO         0
 #define CAMERA_XCLK_FREQ_HZ 20000000
-#define CAMERA_JPEG_QUAL    28
+#define CAMERA_JPEG_QUAL    40
 #define CAMERA_FRAME_SIZE   FRAMESIZE_QVGA
 #define AI_TASK_STACK_SIZE  (1024 * 16)
 
@@ -57,10 +57,14 @@
 #define APP_CAM_WS_PATH     "/ws/camera"
 #define APP_CAM_CTRL_WS_PATH "/ws/camera_ctrl"
 #define APP_CAM_UDP_PORT    22345
-#define APP_CAM_UDP_PAYLOAD 1024
-#define APP_CAM_UDP_CHUNK_GAP_MS 8
-#define APP_CAM_UDP_ENOMEM_RETRY 8
-#define APP_CAM_UDP_ENOMEM_RETRY_DELAY_MS 12
+#define APP_CAM_UDP_PAYLOAD 1400
+#define APP_CAM_UDP_CHUNK_GAP_MS 50
+#define APP_CAM_UDP_ENOMEM_RETRY 1
+#define APP_CAM_UDP_ENOMEM_RETRY_DELAY_MS 30
+#define APP_CAM_UDP_START_DELAY_MS 8000
+#define APP_CAM_REQUIRE_CTRL_WS 1
+#define APP_CAM_UDP_FAIL_COOLDOWN_MS 3000
+#define APP_CAM_UDP_FAIL_REOPEN_TH 1
 #define APP_AUD_WS_PATH     "/ws_audio"
 #define APP_STREAM_WAV_PATH "/stream.wav"
 
@@ -82,25 +86,25 @@
 #define I2S_MIC_CLK_IO      GPIO_NUM_42
 #define I2S_MIC_DIN_IO      GPIO_NUM_41
 #define APP_MIC_SAMPLE_RATE 16000
-#define APP_MIC_CHUNK_MS    20
+#define APP_MIC_CHUNK_MS    40
 #define APP_MIC_QUEUE_DEPTH 10
 
 // Camera streaming
 #define APP_CAM_QUEUE_DEPTH 1
-#define APP_CAM_MIN_FPS     5
+#define APP_CAM_MIN_FPS     1
 #define APP_CAM_MAX_FPS     60
-#define APP_CAM_DEFAULT_FPS 5
+#define APP_CAM_DEFAULT_FPS 4
 
 // WebSocket tuning (camera/audio)
-#define APP_WS_RECONNECT_MS       10000
+#define APP_WS_RECONNECT_MS       3000
 #define APP_WS_NETWORK_TIMEOUT_MS 15000
-#define APP_WS_PING_INTERVAL_SEC  10
-#define APP_WS_PING_TIMEOUT_SEC   20
+#define APP_WS_PING_INTERVAL_SEC  60
+#define APP_WS_PING_TIMEOUT_SEC   60
 #define APP_WS_KEEPALIVE_ENABLE   1
 #define APP_WS_KEEPALIVE_IDLE     5
 #define APP_WS_KEEPALIVE_INTERVAL 5
 #define APP_WS_KEEPALIVE_COUNT    3
-#define APP_WS_SEND_TIMEOUT_MS    3000
+#define APP_WS_SEND_TIMEOUT_MS    5000
 #define APP_WS_FORCE_RESTART_MS   30000
 
 // This board should not pull /stream.wav; the audio+IMU board owns playback.

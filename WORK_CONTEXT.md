@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-22 17:48 Asia/Shanghai
+Last updated: 2026-05-22 19:25 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -34,6 +34,8 @@ Current verified cloud status on 2026-05-22 17:48:
 - 2026-05-22 12:06 A-board microphone restore: mic was unavailable because the previous video-performance baseline had disabled both ends: `APP_MIC_UPLINK_ENABLE=0` in ESP32A firmware and `AIGLASS_AUDIO_WS_ENABLED=0` in the ECS `.env`/cloud compose path. `esp32_video_mic/main/inc/sys_config.h` now sets `APP_MIC_UPLINK_ENABLE=1`; `backend/docker-compose.cloud.yml` now defaults `AIGLASS_AUDIO_WS_ENABLED=1`; ECS `.env` was updated to `AIGLASS_AUDIO_WS_ENABLED=1`; the updated compose file was copied to `/root/smart_glasses_esp32_workspace/backend/docker-compose.cloud.yml`; and `docker compose -f docker-compose.cloud.yml up -d` left container `aiglass` healthy. ESP32A was rebuilt and flashed to `COM22`; serial showed `APP_WS_AUD: PDM RX ready @ 16000 Hz`, `audio ws uri: ws://47.110.89.207:8765/ws_audio`, and `APP_WS_AUD: ws connected`. A 50-second cloud poll kept `audio_last_rx_age_ms` at `0-49 ms` while camera stayed around `9.99-10.05 fps`.
 - 2026-05-22 12:20 repository publish prep: `README.md` was rewritten from an older mojibake/Phase-2-local-gateway snapshot into the current public-cloud-first product snapshot. It now documents current feature completion, active public backend, A/B board responsibilities, cloud Docker deployment, local development, ESP32A/B flashing, verification commands, and files that must not be committed.
 - 2026-05-22 17:48 targeted A-board recovery: a temporary mic-off test did **not** fix ESP32A video `sendto errno=12`, so microphone uplink was restored. The stable public-cloud camera profile was reverted to `QVGA`, `QUALITY=28`, `FPS=5` on both ESP32A firmware defaults and cloud compose/ECS `.env`; cloud auto-tune fallback is now `QUALITY=36`, `FPS=5`. ESP32A was rebuilt/flashed to `COM22`; serial showed `APP_WS_AUD: PDM RX ready @ 16000 Hz`, `APP_WS_AUD: ws connected`, `camera_ctrl connected`, `framesize set to QVGA`, `quality=28`, `target_fps=5`, and repeated 5-second windows `sent_5s=25/26`, `fail_5s=0`, `avg_jpeg≈2670`, RSSI around `-45` to `-49`. Stable cloud polls showed `complete_fps≈5.0`, `drop_ratio_10s=0.0`, `last_frame_age_ms≈40-184`, and `audio_last_rx_age_ms≈0-40 ms`.
+
+- 2026-05-22 19:25 public-cloud A-board stabilization: microphone and video failures were traced to ESP32A network pressure, not ECS CPU. WebSocket video fallback was retested and rejected because public TCP camera frames stalled for roughly `1.6-2.6s` and disconnected. The working profile is now `HQVGA / q40 / 4fps`, UDP payload `1400`, per-chunk gap `50ms`, UDP ENOMEM cooldown `3000ms`, microphone chunks `40ms`, WebSocket send timeout `5000ms`, and WebSocket ping interval/timeout `60s`. Backend `/ws_audio` now decouples PCM receive from DashScope ASR with a small `asyncio.Queue` plus `asyncio.to_thread`, and same-public-IP audio reconnects are allowed to replace stale owners. Cloud `.env` and `docker-compose.cloud.yml` use `AIGLASS_DISCOVERY_HOST=47.110.89.207`, `AIGLASS_CAMERA_CHAT_FRAMESIZE=HQVGA`, `AIGLASS_CAMERA_CHAT_QUALITY=40`, `AIGLASS_CAMERA_CHAT_FPS=4`, `AIGLASS_CAMERA_NAV_FRAMESIZE=HQVGA`, `AIGLASS_CAMERA_NAV_QUALITY=40`, `AIGLASS_CAMERA_NAV_FPS=4`, `AIGLASS_CAMERA_AUTOTUNE_QUALITY=40`, and `AIGLASS_CAMERA_AUTOTUNE_FPS=4`. Verification after reflashing ESP32A to `COM22`: 100-second serial capture showed `framesize set to HQVGA`, `quality=40`, `target_fps=4`, repeated windows around `sent_5s=20/21`, `fail_5s=0`, `avg_jpeg=3174-3252`, `avg_send_ms=102`, RSSI about `-38` to `-46`, and no mic WebSocket disconnect after startup. Final cloud poll showed `/api/camera/stats` `completed_frames=377`, `complete_fps=4.0`, `avg_jpeg_bytes=3224`, `drop_ratio_10s=0.0`, `crc_errors=0`, `invalid_packets=0`, `last_frame_age_ms=36`; `/api/test/status` showed `audio_client=112.23.177.84:28773` and `audio_last_rx_age_ms=97`.
 
 Important operating rule:
 
@@ -76,7 +78,7 @@ Clean copy: `E:\Desktop\smart_glasses_esp32_workspace\esp32_video_mic`
 Current role:
 
 - In product/demo mode, prefers public fallback `47.110.89.207:8765` when configured (`SEC_BACKEND_PREFER_FALLBACK=1`), then uses LAN UDP discovery on `54321` only if fallback is unavailable or explicitly disabled for lab testing.
-- Camera uploads JPEG latest-frame stream to backend `UDP 22345`; each frame is split into 1024-byte UDP payload chunks with the 32-byte little-endian `AIGC` header and CRC32.
+- Camera uploads JPEG latest-frame stream to backend `UDP 22345`; each frame is split into 1400-byte UDP payload chunks with the 32-byte little-endian `AIGC` header and CRC32.
 - Camera WebSocket is no longer the main video path. A lightweight control channel connects to `ws://<discovered-backend>:8765/ws/camera_ctrl`.
 - PDM microphone uploads PCM16 mono 16 kHz chunks to `ws://<discovered-backend>:8765/ws_audio`.
 - This board does not own `/stream.wav`, TTS, local HTTP preview, or IMU.
@@ -90,7 +92,7 @@ Changes already made in the clean copy:
 - `main/inc/sys_config.h` no longer has a hardcoded backend host; the stable backend HTTP/WebSocket port remains `8765`.
 - Camera UDP sender, camera control WebSocket, and microphone WebSocket clients now wait for discovered backend host before connecting.
 - `main/src/app_stream_cam.c` now uses three pinned tasks: `cam_capture_task` on core 0, `cam_udp_send_task` on core 1, and `cam_ctrl_ws_task` on core 1. Camera queue depth is fixed at `1`; sending aborts an old frame if a newer frame is already waiting.
-- A-board camera defaults are currently `FRAMESIZE_QVGA`, `CAMERA_JPEG_QUAL=28`, `APP_CAM_DEFAULT_FPS=5`, `APP_CAM_UDP_PAYLOAD=1024`, and `APP_CAM_UDP_PORT=22345` for the public demo stability baseline with microphone enabled.
+- A-board public-cloud camera defaults are currently `FRAMESIZE_QVGA` at boot but the cloud control profile immediately switches to `HQVGA`, `CAMERA_JPEG_QUAL=40`, `APP_CAM_DEFAULT_FPS=4`, `APP_CAM_UDP_PAYLOAD=1400`, `APP_CAM_UDP_CHUNK_GAP_MS=50`, and `APP_CAM_UDP_PORT=22345` for the current microphone-safe public demo stability baseline.
 - Control commands kept for backend mode linkage: `SET:FPS=...`, `SET:QUALITY=...`, and `SET:FRAMESIZE=...`.
 - `APP_WAV_STREAM_ENABLE` is `0`, so this board does not pull backend audio playback.
 - `main/CMakeLists.txt` no longer compiles local HTTP, TTS, or IMU modules for this board.
@@ -167,8 +169,8 @@ Backend `.env` items that must be checked before hardware testing:
 - `AIGLASS_CAMERA_SOURCE=cpp_gateway` is the local Windows/LAN gateway optimization input.
 - `AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1`, `AIGLASS_CAMERA_CPP_GATEWAY_MODE=external`, `AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1`, `AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0`, and `AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346` should be set for the current Windows-host C++ gateway path.
 - `AIGLASS_CAMERA_UDP_PORT=22345`, `AIGLASS_CAMERA_UDP_FRAME_TTL_MS=250`, and `AIGLASS_CAMERA_CTRL_WS_ENABLED=1` should be set for the A-board UDP transport.
-- Current public cloud camera profile: `AIGLASS_CAMERA_CHAT_FRAMESIZE=QVGA`, `AIGLASS_CAMERA_CHAT_QUALITY=28`, `AIGLASS_CAMERA_CHAT_FPS=5`, `AIGLASS_CAMERA_NAV_FRAMESIZE=QVGA`, `AIGLASS_CAMERA_NAV_QUALITY=28`, `AIGLASS_CAMERA_NAV_FPS=5`.
-- Current public cloud auto-tune fallback: `AIGLASS_CAMERA_AUTOTUNE_QUALITY=36`, `AIGLASS_CAMERA_AUTOTUNE_FPS=5`, `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=60`; this prevents transient A-board reconnect drops from immediately forcing repeated downshifts during startup.
+- Current public cloud camera profile: `AIGLASS_CAMERA_CHAT_FRAMESIZE=HQVGA`, `AIGLASS_CAMERA_CHAT_QUALITY=40`, `AIGLASS_CAMERA_CHAT_FPS=4`, `AIGLASS_CAMERA_NAV_FRAMESIZE=HQVGA`, `AIGLASS_CAMERA_NAV_QUALITY=40`, `AIGLASS_CAMERA_NAV_FPS=4`.
+- Current public cloud auto-tune fallback: `AIGLASS_CAMERA_AUTOTUNE_QUALITY=40`, `AIGLASS_CAMERA_AUTOTUNE_FPS=4`, `AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=60`; this keeps the public path on the validated microphone-safe profile after startup.
 - `AIGLASS_NAV_DIRECT_VIEWER=0` makes `/ws/viewer` send backend-native annotated JPEGs during navigation. Set it to `1` only when testing the raw-first frontend-overlay path.
 - Use `AIGLASS_CAMERA_SOURCE=ws` only for the old direct `/ws/camera` JPEG debug fallback.
 - Backend discovery responder must listen on UDP `54321` and return the backend machine IP reachable by the ESP32 boards.

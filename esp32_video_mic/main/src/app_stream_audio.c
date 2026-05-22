@@ -232,7 +232,7 @@ static void mic_upload_task(void *arg) {
         }
         if (!aud_ws_is_connected()) {
             s_aud_ws_ready = false;
-            s_run_audio_stream = false;
+            reset_mic_upload_pipeline();
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -244,7 +244,10 @@ static void mic_upload_task(void *arg) {
             if (sent <= 0) {
                 ESP_LOGW(TAG, "mic uplink send failed, wait reconnect");
                 s_aud_ws_ready = false;
-                s_run_audio_stream = false;
+                reset_mic_upload_pipeline();
+                if (s_aud_ws) {
+                    esp_websocket_client_close(s_aud_ws, pdMS_TO_TICKS(200));
+                }
             }
         }
     }
@@ -621,9 +624,11 @@ static void aud_ws_event_handler(void *handler_args, esp_event_base_t base, int3
 
     if (event_id == WEBSOCKET_EVENT_CONNECTED) {
         s_aud_ws_ready = true;
-        s_run_audio_stream = true;
+        s_run_audio_stream = false;
         ESP_LOGI(TAG, "ws connected");
-        aud_ws_send_text("START");
+        if (aud_ws_send_text("START") > 0) {
+            s_run_audio_stream = true;
+        }
         wav_stream_start();
 #if APP_PROMPT_SWEEP_TEST_ENABLE
         if (!s_prompt_sweep_running) {
@@ -635,7 +640,7 @@ static void aud_ws_event_handler(void *handler_args, esp_event_base_t base, int3
     }
     if (event_id == WEBSOCKET_EVENT_DISCONNECTED) {
         s_aud_ws_ready = false;
-        s_run_audio_stream = false;
+        reset_mic_upload_pipeline();
         ESP_LOGI(TAG, "ws disconnected");
         wav_stream_stop();
         return;
@@ -702,7 +707,7 @@ static void aud_ws_task(void *arg) {
     while (1) {
         if (s_aud_ws && !aud_ws_is_connected()) {
             s_aud_ws_ready = false;
-            s_run_audio_stream = false;
+            reset_mic_upload_pipeline();
             TickType_t now = xTaskGetTickCount();
             if ((now - last_force_restart) >= pdMS_TO_TICKS(APP_WS_FORCE_RESTART_MS)) {
                 ESP_LOGW(TAG, "audio ws offline, force restart client");
