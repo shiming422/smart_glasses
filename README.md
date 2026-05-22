@@ -1,275 +1,325 @@
-# Smart Glasses: Two ESP32 + Docker Backend
+# Smart Glasses: Two ESP32 + Public Cloud Backend
 
-这是一个智能眼镜原型工程。当前稳定版采用两块 ESP32 分工协作，PC 端 Docker 后端负责 AI、语音、前端页面和协议汇聚。
+这是一个双 ESP32 智能眼镜原型工程。当前方向已经从“本地电脑后端优先”切换为“公网云端后端优先”：硬件只要连接任意可访问公网的 Wi-Fi，就会使用常开的云端后端完成视频、麦克风、IMU、前端预览和导航推理联调。
 
-当前黄金基线提交：`998659e`  
-黄金基线时间：`2026-05-20 23:11 Asia/Shanghai`  
-当前 Phase 2 视频网关：Windows 主机 C++ `cpp_gateway` 默认启用，Docker Python 通过 TCP 接收完整 JPEG。
-提交记录详见：[COMMIT_HISTORY.md](COMMIT_HISTORY.md)
+当前公开演示后端：
 
-## 当前状态
+- 前端/后端入口：`http://47.110.89.207:8765/`
+- 健康检查：`http://47.110.89.207:8765/api/health`
+- ECS 后端目录：`/root/smart_glasses_esp32_workspace/backend`
+- ECS 启动命令：`docker compose -f docker-compose.cloud.yml up -d`
+- 当前主线提交：见 `git log --oneline -5`
+- 跨窗口上下文：先读 [WORK_CONTEXT.md](WORK_CONTEXT.md)
 
-这版已经在真实硬件上跑通：
+## 当前完成度
 
-- ESP32A 摄像头不再走 WebSocket 大 JPEG 包，而是走 UDP `22345` 分片 JPEG 最新帧流。
-- 默认后端视频入口是 C++ gateway：Windows 主机 C++ 进程监听 UDP `22345`，Docker 内 Python 通过映射 TCP `127.0.0.1:22346` 接收完整最新 JPEG。
-- 浏览器导航预览默认使用后端盲道模块原生 OpenCV 标注 JPEG；`/ws/nav_events` 继续保留给导航状态/文字事件。
-- ESP32A 控制走 `/ws/camera_ctrl`，后端可按导航/对话模式下发 FPS、质量、分辨率。
-- CHAT 当前使用 `QUALITY=40 / 10 FPS`，导航档使用 `VGA / QUALITY=30 / 10 FPS`；如果临时降档，稳定后会自动恢复当前模式档位。
-- ESP32B 当前临时关闭扬声器和 `/stream.wav` 拉流，只保留 IMU 上传；恢复时把 `ENABLE_SPEAKER_PLAYBACK` 改回 `1` 后重刷 B 板。
+| 模块 | 状态 | 说明 |
+| --- | --- | --- |
+| ESP32A 视频上传 | 已打通 | OV5640 JPEG 走 UDP `22345` 分片上传，当前公网稳定约 `10 fps` |
+| ESP32A 麦克风上传 | 已恢复并验证 | PDM RX `16 kHz PCM16` 走 WebSocket `/ws_audio`，云端 `audio_last_rx_age_ms` 接近 `0` |
+| ESP32A 云端优先 | 已修复 | 固件优先使用 `47.110.89.207:8765` fallback，避免被局域网发现结果劫走 |
+| ESP32B IMU 上传 | 已打通 | ICM42688 姿态数据走 `/ws/imu_in`，保留 UDP `12345` fallback |
+| ESP32B 音频播放 | 当前演示中关闭 | B 板扬声器播放为性能/安静演示暂时关闭，可按需要重新启用 |
+| 公网 Docker 后端 | 已部署 | `aiglass` 容器 healthy，发布 TCP `8765` 和 UDP `22345/12345/54321` |
+| 前端预览 | 已部署 | 支持视频预览缩放、IMU/眼镜模型面板拖拽缩放 |
+| 盲道导航 | 可用 | 前端 overlay 事件驱动绘制，后端推理按最新帧限频，避免队列堆积 |
+| 本地 C++ gateway | 保留为实验路径 | 本地 LAN 优化可用，但当前公网演示不依赖它 |
+
+最近一次闭环验证要点：
+
+- A 板串口：`using backend fallback: 47.110.89.207:8765`
+- A 板串口：`camera udp target: 47.110.89.207:22345`
+- A 板串口：`APP_WS_AUD: PDM RX ready @ 16000 Hz`
+- A 板串口：`APP_WS_AUD: ws connected`
+- 云端 `/api/test/status`：`audio_ws_enabled=true`
+- 云端 `/api/test/status`：`camera_udp_fps≈10`
+- 云端 `/api/camera/stats`：`crc_errors=0`，`invalid_packets=0`
 
 ## 工程结构
 
 ```text
 .
-├── backend/              # FastAPI + Docker 后端、前端页面、AI/语音/视频汇聚
-├── esp32_video_mic/      # ESP32A：摄像头 + PDM 麦克风上行
-├── esp32_audio_imu/      # ESP32B：I2S 播放 + ICM42688 IMU
-├── reference_all_in_one_C/ # 历史 all-in-one 参考代码
-├── WORK_CONTEXT.md       # Codex 多窗口共享工程上下文
-└── COMMIT_HISTORY.md     # 当前代码提交记录
+|-- backend/                 # FastAPI/Docker 后端、前端页面、AI/语音/视频/IMU 汇聚
+|-- esp32_video_mic/         # ESP32A：摄像头 + PDM 麦克风上行
+|-- esp32_audio_imu/         # ESP32B：音频播放 + ICM42688 IMU
+|-- reference_all_in_one_C/  # 历史 all-in-one Arduino 参考代码
+|-- WORK_CONTEXT.md          # Codex 多窗口共享上下文，必须保持最新
+|-- COMMIT_HISTORY.md        # 历史工程提交记录
+`-- README.md
 ```
 
 ## 硬件分工
 
-### ESP32A: Video + Mic
+### ESP32A: Video + Microphone
 
-- UDP 广播 `54321` 自动发现后端。
-- 摄像头 JPEG 分片发送到后端 UDP `22345`。
-- 摄像头控制 WebSocket：`ws://<backend>:8765/ws/camera_ctrl`。
-- 麦克风 PCM16 16 kHz 上传到：`ws://<backend>:8765/ws_audio`。
-- 默认相机参数：`VGA`、JPEG quality `24`、`10 FPS`、UDP payload `1024` bytes。
+当前目录：`esp32_video_mic`
+
+职责：
+
+- 摄像头 JPEG 最新帧上传到后端 UDP `22345`
+- 每帧使用 `AIGC` 分片头、CRC32 和 1024-byte payload 分片
+- 控制通道连接 `ws://<backend>:8765/ws/camera_ctrl`
+- PDM 麦克风上传 `PCM16 mono 16 kHz` 到 `ws://<backend>:8765/ws_audio`
+- 不负责 `/stream.wav` 播放、TTS、本地 HTTP 预览或 IMU
+
+当前关键配置：
+
+- `APP_MIC_UPLINK_ENABLE=1`
+- `APP_BACKEND_PREFER_FALLBACK=1`
+- `SEC_BACKEND_FALLBACK_HOST=47.110.89.207`（在本地 ignored `secrets.h` 中）
+- `CAMERA_FRAME_SIZE=FRAMESIZE_QVGA`
+- `CAMERA_JPEG_QUAL=18`
+- `APP_CAM_DEFAULT_FPS=10`
+- `APP_CAM_UDP_PORT=22345`
 
 ### ESP32B: Audio + IMU
 
-- 当前构建临时静音：`ENABLE_SPEAKER_PLAYBACK=0`，不拉取 `http://<backend>:8765/stream.wav`。
-- IMU 上传：UDP `12345`，并保留 WebSocket `/ws/imu_in` 上行选项。
-- 同样通过 UDP `54321` 自动发现后端。
+当前目录：`esp32_audio_imu`
 
-## 主要接口
+职责：
+
+- ICM42688 姿态数据上传到后端
+- 主路径使用 WebSocket `/ws/imu_in`
+- 保留 UDP `12345` fallback
+- 音频播放能力保留，但当前演示基线中扬声器播放关闭
+- 不负责摄像头或麦克风上行
+
+## 后端接口
 
 | 接口 | 作用 |
 | --- | --- |
-| `GET /` | 前端调试页面 |
+| `GET /` | 前端演示/调试页面 |
 | `GET /api/health` | 后端健康检查 |
-| `GET /api/camera/stats` | 摄像头 UDP/FPS/丢帧/CRC 统计 |
-| `UDP 22345` | ESP32A 主视频链路，当前由 Windows 主机 C++ gateway 重组分片 JPEG |
-| `TCP 127.0.0.1:22346` | Windows C++ gateway 到 Docker Python 的完整 JPEG/stats 通道 |
+| `GET /api/perf/status` | 运行态、摄像头、IMU、推理状态聚合 |
+| `GET /api/camera/stats` | 摄像头 UDP/FPS/CRC/丢帧/控制通道统计 |
+| `GET /api/imu/status` | IMU 上传状态和最新姿态 |
+| `GET /api/test/status` | 演示状态、音频状态、导航状态 |
+| `POST /api/test/control` | 测试控制，例如 `blind_nav` / `stop_nav` |
+| `UDP 22345` | ESP32A 摄像头分片 JPEG 主链路 |
+| `UDP 12345` | ESP32B IMU UDP fallback |
+| `UDP 54321` | 后端发现服务，回复 `AIGLASS_HOST:<ip>` |
 | `WebSocket /ws/camera_ctrl` | ESP32A 摄像头控制 |
-| `WebSocket /ws/viewer` | 浏览器预览 JPEG |
-| `WebSocket /ws/nav_events` | 导航结构化事件 |
 | `WebSocket /ws_audio` | ESP32A 麦克风上行 |
-| `GET /stream.wav` | ESP32B 音频播放流 |
-| `UDP 12345` | ESP32B IMU 上传 |
-| `WebSocket /ws/imu_in` | ESP32B IMU WebSocket 上传选项 |
-| `UDP 54321` | 后端发现服务 |
+| `WebSocket /ws/imu_in` | ESP32B IMU WebSocket 上行 |
+| `WebSocket /ws/viewer` | 浏览器视频预览 |
+| `WebSocket /ws/nav_events` | 导航识别事件/overlay 数据 |
+| `GET /stream.wav` | ESP32B 音频播放流，当前演示默认不主动使用 |
 
-## 后端运行
+## 公网部署
 
-1. 进入后端目录：
+ECS 上使用 `backend/docker-compose.cloud.yml`。
+
+关键环境变量：
+
+```dotenv
+AIGLASS_HOST=0.0.0.0
+AIGLASS_PORT=8765
+AIGLASS_CAMERA_SOURCE=udp
+AIGLASS_CAMERA_UDP_PORT=22345
+AIGLASS_CAMERA_CTRL_WS_ENABLED=1
+AIGLASS_AUDIO_WS_ENABLED=1
+AIGLASS_UDP_PORT=12345
+AIGLASS_DISCOVERY_PORT=54321
+AIGLASS_DISCOVERY_HOST=47.110.89.207
+AIGLASS_NAV_DIRECT_VIEWER=1
+AIGLASS_NAV_SKIP_BACKEND_ANNOTATION=1
+AIGLASS_NAV_INFER_MIN_INTERVAL_MS=300
+AIGLASS_PATH_FRAME_DIV=2
+ENABLE_TTS=false
+```
+
+启动/重启：
+
+```bash
+cd /root/smart_glasses_esp32_workspace/backend
+docker compose -f docker-compose.cloud.yml up -d
+docker compose -f docker-compose.cloud.yml ps
+```
+
+验证：
+
+```bash
+curl http://47.110.89.207:8765/api/health
+curl http://47.110.89.207:8765/api/camera/stats
+curl http://47.110.89.207:8765/api/test/status
+curl http://47.110.89.207:8765/api/imu/status
+```
+
+公网安全组/防火墙需要放行：
+
+- TCP `8765`
+- UDP `22345`
+- UDP `12345`
+- UDP `54321`
+
+## 本地后端开发
 
 ```powershell
 cd E:\Desktop\smart_glasses_esp32_workspace\backend
-```
-
-2. 准备本地环境文件：
-
-```powershell
 Copy-Item .env.example .env
-```
-
-然后编辑 `.env`，至少设置：
-
-```dotenv
-DASHSCOPE_API_KEY=你的真实key
-AIGLASS_DISCOVERY_HOST=你的电脑局域网IP
-AIGLASS_CAMERA_SOURCE=cpp_gateway
-AIGLASS_CAMERA_CPP_GATEWAY_ENABLED=1
-AIGLASS_CAMERA_CPP_GATEWAY_MODE=external
-AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1
-AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0
-AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346
-AIGLASS_CAMERA_UDP_PORT=22345
-AIGLASS_CAMERA_CTRL_WS_ENABLED=1
-AIGLASS_CAMERA_AUTOTUNE_WARMUP_SEC=35
-AIGLASS_AUDIO_WS_ENABLED=1
-```
-
-3. 启动 Docker：
-
-```powershell
 docker compose up -d --build
 ```
 
-4. 启动 Windows 主机 C++ gateway：
+本地 `.env` 至少需要：
 
-```powershell
-cd E:\Desktop\smart_glasses_esp32_workspace\backend
-.\cpp_gateway\start_host_gateway.ps1 -Hidden
+```dotenv
+DASHSCOPE_API_KEY=你的真实 key
+AIGLASS_DISCOVERY_HOST=你的电脑局域网 IP
+AIGLASS_CAMERA_SOURCE=udp
+AIGLASS_CAMERA_UDP_PORT=22345
+AIGLASS_UDP_PORT=12345
+AIGLASS_DISCOVERY_PORT=54321
+AIGLASS_AUDIO_WS_ENABLED=1
 ```
 
-如需重新编译 Windows gateway：
-
-```powershell
-.\cpp_gateway\build_windows_gateway.ps1
-```
-
-5. 打开前端：
-
-```text
-http://127.0.0.1:8765/
-```
-
-6. 查看关键状态：
-
-```powershell
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/health
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/camera/stats
-```
-
-## Windows 防火墙
-
-真实硬件 UDP 视频需要放行本机 UDP `22345`：
+本地 Windows 如果直接收硬件 UDP，需要防火墙放行：
 
 ```powershell
 New-NetFirewallRule -DisplayName 'AIGlass-Camera-22345-UDP-In' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 22345
 ```
 
-当前外部 C++ gateway 模式下，Docker 需要映射：
+可选本地 C++ gateway：
 
-- TCP `8765`
-- TCP `22346`
-- UDP `12345`
-- UDP `54321`
+```powershell
+cd E:\Desktop\smart_glasses_esp32_workspace\backend
+.\cpp_gateway\build_windows_gateway.ps1
+.\cpp_gateway\start_host_gateway.ps1 -Hidden
+```
 
-UDP `22345` 由 Windows 主机上的 `aiglass_cam_gateway.exe` 直接绑定。只有切回 Docker 内部 gateway 或 Python UDP fallback 时，才需要让 Docker 接管 UDP `22345`。
+启用本地 C++ gateway 时，后端配置使用：
 
-## ESP32A 编译烧录
+```dotenv
+AIGLASS_CAMERA_SOURCE=cpp_gateway
+AIGLASS_CAMERA_CPP_GATEWAY_MODE=external
+AIGLASS_CAMERA_GATEWAY_TCP_HOST=127.0.0.1
+AIGLASS_CAMERA_GATEWAY_TCP_BIND_HOST=0.0.0.0
+AIGLASS_CAMERA_GATEWAY_TCP_PORT=22346
+```
 
-本机验证使用 ESP-IDF `5.5.2`：
+## ESP32A 编译和烧录
+
+本机验证工具链：ESP-IDF `5.5.2`。
 
 ```powershell
 cd E:\Desktop\smart_glasses_esp32_workspace\esp32_video_mic
-& C:\Users\shiming\esp\v5.5.2\esp-idf\export.ps1
-idf.py --no-ccache -p COM22 flash monitor
-```
-
-烧录前复制并填写私有配置：
-
-```powershell
 Copy-Item main\inc\secrets.example.h main\inc\secrets.h
 ```
 
-`secrets.h` 不要提交。
+编辑 `main\inc\secrets.h`，填写：
+
+```c
+#define SEC_WIFI_SSID "你的 2.4GHz Wi-Fi"
+#define SEC_WIFI_PASS "你的 Wi-Fi 密码"
+#define SEC_BACKEND_FALLBACK_HOST "47.110.89.207"
+#define SEC_BACKEND_FALLBACK_PORT 8765
+#define SEC_BACKEND_PREFER_FALLBACK 1
+```
+
+编译/烧录：
+
+```powershell
+& C:\Users\shiming\esp\v5.5.2\esp-idf\export.ps1
+idf.py --no-ccache build
+idf.py --no-ccache -p COM22 flash monitor
+```
 
 串口应看到：
 
-- `cam_capture_task core=0`
-- `cam_udp_send_task core=1`
-- `cam_ctrl_ws_task core=1`
-- `backend discovered`
+- `using backend fallback: 47.110.89.207:8765`
+- `camera udp target: 47.110.89.207:22345`
 - `camera_ctrl connected`
-- 5 秒统计中的 `sent_5s`、`avg_jpeg`、`avg_send_ms`、`rssi`
+- `APP_WS_AUD: PDM RX ready @ 16000 Hz`
+- `APP_WS_AUD: ws connected`
+- `stats cap_5s=50/51 sent_5s=50/51 fail_5s=0`
 
-## ESP32B 编译烧录
+## ESP32B 编译和烧录
 
-本机验证使用 PlatformIO：
+本机验证工具链：PlatformIO。
 
 ```powershell
 cd E:\Desktop\smart_glasses_esp32_workspace\esp32_audio_imu
+Copy-Item wifi_profile.example.h wifi_profile.h
+```
+
+编辑 `wifi_profile.h`，填写 Wi-Fi 和公网 fallback：
+
+```c
+#define WIFI_SSID_VALUE "你的 2.4GHz Wi-Fi"
+#define WIFI_PASS_VALUE "你的 Wi-Fi 密码"
+#define BACKEND_FALLBACK_HOST_VALUE "47.110.89.207"
+```
+
+编译/烧录：
+
+```powershell
 C:\Users\shiming\.platformio\penv\Scripts\pio.exe run
 C:\Users\shiming\.platformio\penv\Scripts\pio.exe run -t upload --upload-port COM30
 ```
 
-烧录前复制并填写私有 Wi-Fi 配置：
+如果 PlatformIO 上传进度在 Windows 编码上崩溃，可以使用 `.pio/build/xiao_esp32s3/firmware.bin` 走 `esptool` 直接烧录。
+
+## 验证清单
+
+硬件烧录后，公网验证：
 
 ```powershell
-Copy-Item wifi_profile.example.h wifi_profile.h
+Invoke-RestMethod http://47.110.89.207:8765/api/health
+Invoke-RestMethod http://47.110.89.207:8765/api/camera/stats
+Invoke-RestMethod http://47.110.89.207:8765/api/test/status
+Invoke-RestMethod http://47.110.89.207:8765/api/imu/status
 ```
 
-`wifi_profile.h` 不要提交。
+通过标准：
 
-## 不上传的内容
+- `GET /api/health` 返回 `OK`
+- `camera.complete_fps` 接近 `10`
+- `camera.last_frame_age_ms` 通常小于 `350`
+- `camera.crc_errors` 和 `camera.invalid_packets` 不持续增长
+- `camera.ctrl_clients >= 1`
+- `audio_ws_enabled=true`
+- `audio_last_rx_age_ms` 接近 `0`
+- `imu.ws_in_packets` 持续增长
+- 前端 `http://47.110.89.207:8765/` 能看到视频和导航 overlay
 
-仓库不会提交这些本地文件：
+导航测试：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://47.110.89.207:8765/api/test/control `
+  -ContentType 'application/json' `
+  -Body '{"action":"blind_nav"}'
+
+Invoke-RestMethod -Method Post `
+  -Uri http://47.110.89.207:8765/api/test/control `
+  -ContentType 'application/json' `
+  -Body '{"action":"stop_nav"}'
+```
+
+## 不要提交的内容
+
+这些文件是私密或生成物，必须留在本地/服务器，不要上传：
 
 - `backend/.env`
 - `backend/model/`
+- `backend/runtime_logs/`
+- `backend/recordings/`
 - `backend/__pycache__/`
-- `backend/compile/.pio/`
 - `esp32_video_mic/build/`
 - `esp32_video_mic/managed_components/`
 - `esp32_video_mic/main/inc/secrets.h`
 - `esp32_audio_imu/.pio/`
 - `esp32_audio_imu/wifi_profile.h`
+- Wi-Fi 密码、DashScope API key、云服务器私钥
 
-模型文件、API key、Wi-Fi 密码都需要在本机单独准备。
+## 继续开发规则
 
-## 黄金基线验证摘录
+- 新窗口先读 [WORK_CONTEXT.md](WORK_CONTEXT.md)。
+- 改协议、端口、云端部署、固件功能或当前完成度时，同步更新 `WORK_CONTEXT.md`。
+- 改用户可见能力、部署方式或验证步骤时，同步更新 `README.md`。
+- 每次有意义变更都提交 Git，方便回退。
+- 提交前检查：
 
-ESP32A 烧录到 `COM22` 后，串口确认：
-
-- Wi-Fi: `TP-LINK_6C93`
-- 板子 IP: `192.168.1.109`
-- 后端: `192.168.1.106:8765`
-- UDP target: `192.168.1.106:22345`
-- 平均 JPEG: 约 `12KB-16KB`
-- RSSI: 约 `-47` 到 `-53 dBm`
-
-当前 Phase 2 外部 C++ gateway 真实硬件样本：
-
-```json
-{
-  "protocol": "cpp_gateway",
-  "gateway_mode": "external",
-  "gateway_connected": true,
-  "complete_fps": 9.99,
-  "avg_jpeg_bytes": 10964,
-  "last_frame_age_ms": 3,
-  "camera_source_name": "cpp_gateway",
-  "ctrl_clients": 1,
-  "ctrl_last_command": "SET:FPS=10",
-  "invalid_packets": 0,
-  "crc_errors": 0
-}
+```powershell
+git status --short
+git diff --check
 ```
-
-60 秒盲道导航闭环样本：
-
-```json
-{
-  "nav_events": 47,
-  "nav_result": 46,
-  "nav_infer_errors": 0,
-  "stop_mode": "CHAT",
-  "complete_fps": 10.06
-}
-```
-
-## 回退方式
-
-默认使用 C++ gateway：
-
-```dotenv
-AIGLASS_CAMERA_SOURCE=cpp_gateway
-AIGLASS_CAMERA_CPP_GATEWAY_MODE=external
-```
-
-如果 C++ gateway 出问题，可以临时切回 Python UDP 重组：
-
-```dotenv
-AIGLASS_CAMERA_SOURCE=udp
-```
-
-如果 UDP 视频链路调试失败，可以临时切回旧 WebSocket 调试路径：
-
-```dotenv
-AIGLASS_CAMERA_SOURCE=ws
-```
-
-## 继续开发时的规则
-
-- 先读 `WORK_CONTEXT.md`。
-- 改后端接口、端口、协议、ESP32 分工时，同步更新 `WORK_CONTEXT.md`。
-- 不提交 build、`.pio`、`managed_components`、日志、录制文件、模型、`.env`、私密 Wi-Fi/密钥。
-- 提交前后都看 `git status --short --ignored`。

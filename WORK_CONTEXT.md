@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-22 12:06 Asia/Shanghai
+Last updated: 2026-05-22 12:20 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -32,6 +32,7 @@ Current verified cloud status on 2026-05-22 12:06:
 - Navigation overlay smoothness fix is deployed: frontend overlay drawing is event-driven instead of redrawing on every video frame, and cloud navigation inference throttle is now `AIGLASS_NAV_INFER_MIN_INTERVAL_MS=300` with `AIGLASS_PATH_FRAME_DIV=2`.
 - 2026-05-22 11:49 A-board recovery: ESP32A had stopped appearing on the public backend because firmware trusted a LAN discovery result `192.168.1.106:8765`, so video UDP went to `192.168.1.106:22345` instead of the ECS server. `esp32_video_mic` now defaults `SEC_BACKEND_PREFER_FALLBACK=1`; with public fallback configured, `app_backend.c` uses `47.110.89.207:8765` before LAN discovery. Build passed with ESP-IDF 5.5.2, flashing to `COM22` passed, serial showed `using backend fallback: 47.110.89.207:8765`, `camera udp target: 47.110.89.207:22345`, and `camera_ctrl connected`. Cloud stats then increased from `completed_frames=9039` to `9090` in 5 seconds with `complete_fps=10.05`, `last_frame_age_ms=40`, `crc_errors=0`, and `ctrl_clients=1`.
 - 2026-05-22 12:06 A-board microphone restore: mic was unavailable because the previous video-performance baseline had disabled both ends: `APP_MIC_UPLINK_ENABLE=0` in ESP32A firmware and `AIGLASS_AUDIO_WS_ENABLED=0` in the ECS `.env`/cloud compose path. `esp32_video_mic/main/inc/sys_config.h` now sets `APP_MIC_UPLINK_ENABLE=1`; `backend/docker-compose.cloud.yml` now defaults `AIGLASS_AUDIO_WS_ENABLED=1`; ECS `.env` was updated to `AIGLASS_AUDIO_WS_ENABLED=1`; the updated compose file was copied to `/root/smart_glasses_esp32_workspace/backend/docker-compose.cloud.yml`; and `docker compose -f docker-compose.cloud.yml up -d` left container `aiglass` healthy. ESP32A was rebuilt and flashed to `COM22`; serial showed `APP_WS_AUD: PDM RX ready @ 16000 Hz`, `audio ws uri: ws://47.110.89.207:8765/ws_audio`, and `APP_WS_AUD: ws connected`. A 50-second cloud poll kept `audio_last_rx_age_ms` at `0-49 ms` while camera stayed around `9.99-10.05 fps`.
+- 2026-05-22 12:20 repository publish prep: `README.md` was rewritten from an older mojibake/Phase-2-local-gateway snapshot into the current public-cloud-first product snapshot. It now documents current feature completion, active public backend, A/B board responsibilities, cloud Docker deployment, local development, ESP32A/B flashing, verification commands, and files that must not be committed.
 
 Important operating rule:
 
