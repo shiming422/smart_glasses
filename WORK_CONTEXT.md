@@ -1,6 +1,6 @@
 # Smart Glasses Two-ESP32 Work Context
 
-Last updated: 2026-05-22 20:35 Asia/Shanghai
+Last updated: 2026-05-23 12:02 Asia/Shanghai
 
 This file is the shared bridge between Codex chats. Update it whenever either the ESP32 firmware side or the backend side changes, so a new chat can continue without guessing.
 
@@ -20,6 +20,57 @@ The current product/demo direction is **public-cloud-first**, not local-PC-first
 - SSH key used from this PC: `C:\Users\shiming\.ssh\aliyun_smart_glasses_ed25519`
 - Cloud service command: `cd /root/smart_glasses_esp32_workspace/backend && docker compose -f docker-compose.cloud.yml up -d`
 - Published cloud ports: TCP `8765`; UDP `22345` camera; UDP `12345` IMU; UDP `54321` discovery.
+
+## Latest Server Connection Method
+
+Use Windows PowerShell from this PC:
+
+```powershell
+ssh -i C:\Users\shiming\.ssh\aliyun_smart_glasses_ed25519 root@47.110.89.207
+```
+
+After login:
+
+```bash
+cd /root/smart_glasses_esp32_workspace/backend
+docker compose -f docker-compose.cloud.yml ps
+docker logs --tail 120 aiglass
+curl -s http://127.0.0.1:8765/api/health
+```
+
+Current ECS deployment layout:
+
+- Server backend directory: `/root/smart_glasses_esp32_workspace/backend`
+- Compose file: `/root/smart_glasses_esp32_workspace/backend/docker-compose.cloud.yml`
+- Env file: `/root/smart_glasses_esp32_workspace/backend/.env`
+- Container: `aiglass`
+- Image: `aiglass-backend:cpu-cloud`
+- Server directory is currently a direct-copy deployment, not a Git checkout; `git pull` is not the normal server update method.
+
+To deploy backend code from this local repo, first commit/push locally, then copy only the changed backend files to ECS. Example for the common backend entrypoint/compose update:
+
+```powershell
+scp -i C:\Users\shiming\.ssh\aliyun_smart_glasses_ed25519 backend\app_main.py backend\docker-compose.cloud.yml root@47.110.89.207:/root/smart_glasses_esp32_workspace/backend/
+```
+
+Then rebuild/restart on ECS:
+
+```bash
+cd /root/smart_glasses_esp32_workspace/backend
+docker compose -f docker-compose.cloud.yml up -d --build
+docker compose -f docker-compose.cloud.yml ps
+```
+
+After any deploy, verify from the PC:
+
+```powershell
+Invoke-RestMethod http://47.110.89.207:8765/api/health
+Invoke-RestMethod http://47.110.89.207:8765/api/camera/stats
+Invoke-RestMethod http://47.110.89.207:8765/api/test/status
+Invoke-RestMethod http://47.110.89.207:8765/api/imu/status
+```
+
+Do not overwrite or commit private files such as server `.env`, ESP32 `secrets.h`, `wifi_profile.h`, API keys, model files, recordings, runtime logs, or build outputs. If `.env` must be edited on ECS, back it up first and only change the specific keys needed for the test.
 
 Current verified cloud status after the 2026-05-22 20:15 rollback:
 
