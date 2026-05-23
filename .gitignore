@@ -26,6 +26,7 @@ Desktop.ini
 backend/.env
 backend/.env.*
 !backend/.env.example
+tools/.notify.env
 backend/model/
 backend/mobileclip_blt.ts
 backend/runtime_logs/

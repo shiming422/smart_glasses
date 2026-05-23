@@ -36,6 +36,7 @@ backend/                 FastAPI backend, frontend, Docker deployment, optional 
 esp32_video_mic/         ESP32A camera + microphone firmware
 esp32_audio_imu/         ESP32B IMU + preserved audio playback firmware
 reference_all_in_one_C/  Historical all-in-one Arduino reference
+tools/                   Local project utilities, including phone task notifications
 WORK_CONTEXT.md          Shared handoff/context document for Codex windows
 README.md                This overview
 ```
@@ -125,11 +126,28 @@ Pass criteria for the current public demo:
 - `audio_last_rx_age_ms` stays low while the A board is running
 - IMU packet counters continue to increase when ESP32B is powered
 
+## Phone Completion Notification
+
+This project includes a PushPlus helper so Codex can send a phone notification after long deploy, flash, or validation tasks:
+
+```powershell
+.\tools\notify_phone.ps1 "Codex task finished" "Cloud backend is healthy; ESP32A camera and microphone are online."
+```
+
+Setup for a new checkout:
+
+1. Copy `tools/notify_phone.example.env` to `tools/.notify.env`.
+2. Put the real PushPlus token in `tools/.notify.env`.
+3. Keep `tools/.notify.env` private; it is ignored by Git.
+
+Project convention: at the end of long-running work, send one concise notification with the final success/failure state and the key evidence, such as server health, camera FPS, mic status, flash result, or the blocker that still needs attention.
+
 ## Do Not Commit
 
 Do not commit private/runtime files:
 
 - `backend/.env`
+- `tools/.notify.env`
 - `esp32_video_mic/main/inc/secrets.h`
 - `esp32_audio_imu/wifi_profile.h`
 - ESP-IDF/PlatformIO build outputs

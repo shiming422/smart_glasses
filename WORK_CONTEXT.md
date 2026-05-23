@@ -72,6 +72,22 @@ Invoke-RestMethod http://47.110.89.207:8765/api/imu/status
 
 Do not overwrite or commit private files such as server `.env`, ESP32 `secrets.h`, `wifi_profile.h`, API keys, model files, recordings, runtime logs, or build outputs. If `.env` must be edited on ECS, back it up first and only change the specific keys needed for the test.
 
+## Phone Completion Notification
+
+This workspace has a local PushPlus phone notification helper for long Codex tasks:
+
+```powershell
+.\tools\notify_phone.ps1 "Codex task finished" "Server deploy is healthy; ESP32A is flashed and camera is live."
+```
+
+Notification files:
+
+- Committed script: `tools/notify_phone.ps1`
+- Committed template: `tools/notify_phone.example.env`
+- Local private token file: `tools/.notify.env`
+
+`tools/.notify.env` is ignored by Git and must not be committed. The script reads `PUSHPLUS_TOKEN` from that file or from the current shell environment. Treat this as a project workflow convention: at the end of long-running work, Codex should send one concise success/failure notification with the important final status, for example server health, camera FPS, mic status, flash result, or the blocker that needs attention.
+
 Current verified cloud status after the 2026-05-22 20:15 rollback:
 
 - `GET /api/health` returned `OK`.
